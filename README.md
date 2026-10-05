@@ -19,19 +19,21 @@ A still-running eval cell shows its state word (for example `running`) in place 
 
 ## Install
 
-Windows (PowerShell 5.1):
+One line, no clone needed. Windows (PowerShell 5.1):
 
 ```powershell
-.\install.ps1
+irm https://raw.githubusercontent.com/yjacket/omo-tool-fold/master/install.ps1 | iex
 ```
 
-Git Bash, Linux, macOS:
+Linux, macOS:
 
 ```sh
-sh install.sh
+curl -fsSL https://raw.githubusercontent.com/yjacket/omo-tool-fold/master/install.sh | sh
 ```
 
-Both scripts copy `extension/tool-fold.ts` to `~/.omo/agent/extensions/tool-fold.ts` and `themes/grok-day-focus.json` to `~/.omo/agent/themes/grok-day-focus.json`, creating the folders if needed. They print `installed -> <destination>` for each file. Running omo sessions pick up the extension at their next idle point, or type `/reload`. Neither script touches `settings.json` or anything else, and re-running is safe.
+The script downloads `extension/tool-fold.ts` and `themes/grok-day-focus.json` from this repository's `master` branch into `~/.omo/agent/extensions/` and `~/.omo/agent/themes/`, creating the folders if needed. Each file is fully downloaded before it replaces the installed one. Run from a clone (`.\install.ps1` or `sh install.sh`), it copies the local files instead. It prints `installed -> <destination>` for each file. Running omo sessions pick up the extension at their next idle point, or type `/reload`. It never touches `settings.json` or anything else, and re-running is safe.
+
+On Windows use the PowerShell line: Git Bash's curl may fail with certificate error 60 because it does not read the Windows certificate store.
 
 To use the theme, set this in `~/.omo/agent/settings.json`:
 
@@ -39,7 +41,7 @@ To use the theme, set this in `~/.omo/agent/settings.json`:
 "theme": "grok-day-focus"
 ```
 
-**Update:** `git pull`, then run the install script again.
+**Update:** run the same line again.
 
 **Uninstall:** delete `~/.omo/agent/extensions/tool-fold.ts`, then `/reload` or restart omo. The reload clears the extension's dispatch target, so originals render again. This path is covered by the tests but hasn't been checked live. If you set the theme, change it back to `"grok-day"`.
 
