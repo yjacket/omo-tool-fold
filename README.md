@@ -9,6 +9,7 @@ An OMO (senpi) extension that folds each tool call into a single line while tool
 ```
 eval js ✓ Read config files and list extension folder
 edit extension/tool-fold.ts (+12/-3)
+apply_patch 2 files (+15/-4)
 todo done: A 확인
 web_search bun webview screenshot
 write .omo/drafts/fold-b.txt
@@ -49,6 +50,7 @@ To use the theme, set this in `~/.omo/agent/settings.json`:
 
 - **eval:** `eval js ✓ <first line of the cell summary>`. Error, cancelled, or unknown-status cells keep the original full box.
 - **edit:** `edit <path relative to cwd> (+added/-removed)`.
+- **apply_patch:** `apply_patch <path relative to cwd or N files> (+added/-removed)`. Counts come from the applied preview; partial failures and missing preview data keep the original output.
 - **todo:** only the title line, for example `todo done: A 확인`. The full list is still there through `/todo` and the todo widget under the input box.
 - **These 27 tools** fold to `<tool> <verb> <target>`: web_search, webfetch, write, memory, look_at, powershell, bash_output, tool_search, task, task_output, task_send, task_cancel, team_create, team_delete, task_create, task_get, task_list, task_update, create_goal, update_goal, get_goal, lsp_diagnostics, lsp_goto_definition, lsp_find_references, lsp_symbols, lsp_prepare_rename, lsp_rename.
   - Verb is the `op`, `action` or `command` argument when it's one short token.
@@ -103,7 +105,7 @@ Tested with OMO binary 5.1.12 (npm `omo-ai` 5.1.17, `@code-yeongyu/senpi` 2026.1
 bun test
 ```
 
-This runs 19 tests against fake senpi and pi-tui modules (`bun:test` `mock.module`). Each test imports a fresh copy of the extension through a `?case=<random>` query. The suite doesn't use a live omo session. Live TUI checks are described in [CLAUDE.md](CLAUDE.md).
+This runs renderer tests against fake senpi and pi-tui modules (`bun:test` `mock.module`). Each test imports a fresh copy of the extension through a `?case=<random>` query. The suite doesn't use a live omo session. Live TUI checks are described in [CLAUDE.md](CLAUDE.md).
 
 ## License
 

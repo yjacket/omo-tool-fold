@@ -9,6 +9,7 @@
 ```
 eval js ✓ Read config files and list extension folder
 edit extension/tool-fold.ts (+12/-3)
+apply_patch 2 files (+15/-4)
 todo done: A 확인
 web_search bun webview screenshot
 write .omo/drafts/fold-b.txt
@@ -49,6 +50,7 @@ Windows에서는 PowerShell 줄을 쓰세요. Git Bash의 curl은 Windows 인증
 
 - **eval:** `eval js ✓ <셀 summary 첫 줄>`. 오류, 취소, 상태를 알 수 없는 셀은 원래 상자를 그대로 보여 줍니다.
 - **edit:** `edit <cwd 기준 경로> (+추가/-삭제)`.
+- **apply_patch:** `apply_patch <cwd 기준 경로 또는 N files> (+추가/-삭제)`. 실제 적용 결과의 줄 수를 보여 줍니다. 부분 실패나 미리보기 데이터가 없는 결과는 원래 출력을 유지합니다.
 - **todo:** 제목 줄만 남깁니다. 예: `todo done: A 확인`. 전체 목록은 `/todo` 명령과 입력창 아래 todo 위젯에서 볼 수 있습니다.
 - **다음 27개 도구**는 `<tool> <verb> <target>` 형태로 접힙니다: web_search, webfetch, write, memory, look_at, powershell, bash_output, tool_search, task, task_output, task_send, task_cancel, team_create, team_delete, task_create, task_get, task_list, task_update, create_goal, update_goal, get_goal, lsp_diagnostics, lsp_goto_definition, lsp_find_references, lsp_symbols, lsp_prepare_rename, lsp_rename.
   - verb는 `op`, `action`, `command` 인자가 짧은 한 단어일 때 그 값입니다.
@@ -103,7 +105,7 @@ senpi에는 다른 확장이 만든 도구의 그리기 방식을 바꾸는 공�
 bun test
 ```
 
-가짜 senpi, pi-tui 모듈(`bun:test`의 `mock.module`)을 상대로 테스트 19개를 돌립니다. 테스트마다 `?case=<random>` 쿼리로 확장을 새로 import합니다. 실제 omo 세션은 쓰지 않습니다. 실제 TUI에서 확인하는 방법은 [CLAUDE.md](CLAUDE.md)에 있습니다.
+가짜 senpi, pi-tui 모듈(`bun:test`의 `mock.module`)을 상대로 렌더러 테스트를 돌립니다. 테스트마다 `?case=<random>` 쿼리로 확장을 새로 import합니다. 실제 omo 세션은 쓰지 않습니다. 실제 TUI에서 확인하는 방법은 [CLAUDE.md](CLAUDE.md)에 있습니다.
 
 ## 라이선스
 

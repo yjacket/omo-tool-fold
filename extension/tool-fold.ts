@@ -194,6 +194,36 @@ const editPlan: ToolPlan = {
 	},
 };
 
+const patchPlan: ToolPlan = {
+	renderCall([args, theme, context]) {
+		const ctx = context as RenderContext | undefined;
+		if (ctx?.expanded || ctx?.isError) return undefined;
+		const input = (args as Record<string, unknown> | undefined)?.input;
+		if (typeof input !== "string" || !input.trimEnd().endsWith("*** End Patch")) return undefined;
+		const paths = [...input.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)\r?$/gm)].map((match) => match[1].trim());
+		if (paths.length === 0) return undefined;
+		if (ctx?.hasResult) return { empty: true };
+		const target = paths.length === 1 ? shortPath(paths[0], ctx?.cwd) : `${paths.length} files`;
+		return { line: `${title(theme as Theme, "apply_patch")} ${paint(theme as Theme, "accent", target)}` };
+	},
+	renderResult([result, options, theme, context]) {
+		const res = result as ToolResult;
+		const ctx = context as RenderContext | undefined;
+		const opts = options as RenderOptions;
+		if (isExpanded(opts, ctx) || res?.isError || ctx?.isError) return undefined;
+		const details = res?.details;
+		const patchResult = details?.result as { failures?: unknown[] } | undefined;
+		if (patchResult?.failures?.length) return undefined;
+		const preview = details?.preview as { files?: { filePath?: unknown }[]; added?: unknown; removed?: unknown } | undefined;
+		if (!Array.isArray(preview?.files) || preview.files.length === 0) return undefined;
+		if (preview.files.some((file) => typeof file?.filePath !== "string" || !file.filePath)) return undefined;
+		if (!Number.isInteger(preview.added) || !Number.isInteger(preview.removed)) return undefined;
+		const target = preview.files.length === 1 ? shortPath(String(preview.files[0].filePath), ctx?.cwd) : `${preview.files.length} files`;
+		const suffix = paint(theme as Theme, "muted", ` (+${preview.added}/-${preview.removed})${opts?.isPartial ? " …" : ""}`);
+		return { line: `${title(theme as Theme, "apply_patch")} ${paint(theme as Theme, "accent", target)}${suffix}` };
+	},
+};
+
 const todoPlan: ToolPlan = {
 	renderResult([result, options, , context]) {
 		const res = result as ToolResult;
@@ -242,7 +272,7 @@ function compactPlan(name: string): ToolPlan {
 	};
 }
 
-const PLANS: Record<string, ToolPlan> = { eval: evalPlan, edit: editPlan, todo: todoPlan };
+const PLANS: Record<string, ToolPlan> = { eval: evalPlan, edit: editPlan, apply_patch: patchPlan, todo: todoPlan };
 
 function planFor(name: string): ToolPlan | undefined {
 	if (Object.hasOwn(PLANS, name)) return PLANS[name];

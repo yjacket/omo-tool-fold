@@ -19,6 +19,7 @@ function makeHost(options: { withMethod?: boolean } = {}) {
 	const defs: Record<string, Record<string, unknown>> = {
 		eval: { renderCall: record("eval.call"), renderResult: record("eval.result") },
 		edit: { renderCall: record("edit.call"), renderResult: record("edit.result") },
+		apply_patch: { renderCall: record("patch.call"), renderResult: record("patch.result") },
 		todo: { renderCall: record("todo.call"), renderResult: record("todo.result") },
 		read: { renderCall: record("read.call"), renderResult: record("read.result") },
 		web_search: { renderCall: record("ws.call"), renderResult: record("ws.result") },
@@ -112,6 +113,49 @@ describe("tool-fold", () => {
 		const ctx = { isError: true, hasResult: true, args: { path: "a.ts" } };
 		expect(edit.renderCall({ path: "a.ts" }, theme, ctx)).toEqual({ original: "edit.call" });
 		expect(edit.renderResult({ isError: true }, {}, theme, ctx)).toEqual({ original: "edit.result" });
+	});
+
+	test("apply_patch collapses actual preview totals for single and multiple files", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const patch = session.getToolDefinition("apply_patch");
+		const ctx = { cwd: "C:/repo" };
+		const file = { filePath: "C:/repo/a.ts", added: 2, removed: 1 };
+		const result = { details: { preview: { files: [file], added: 2, removed: 1 } } };
+		expect((patch.renderResult(result, {}, theme, ctx) as FakeTruncatedText).text).toBe("apply_patch a.ts (+2/-1)");
+		const multi = { details: { preview: { files: [file, { filePath: "b.ts" }], added: 3, removed: 4 } } };
+		expect((patch.renderResult(multi, {}, theme, ctx) as FakeTruncatedText).text).toBe("apply_patch 2 files (+3/-4)");
+		expect((patch.renderResult(result, { isPartial: true }, theme, ctx) as FakeTruncatedText).text).toBe("apply_patch a.ts (+2/-1) …");
+	});
+
+	test("apply_patch call summarizes complete headers and hides after a folded result", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const patch = session.getToolDefinition("apply_patch");
+		const args = { input: "*** Begin Patch\n*** Update File: C:/repo/a.ts\n@@\n-old\n+new\n*** Move to: b.ts\n*** Delete File: c.ts\n*** End Patch" };
+		expect((patch.renderCall(args, theme, { cwd: "C:/repo" }) as FakeTruncatedText).text).toBe("apply_patch 2 files");
+		expect((patch.renderCall(args, theme, { hasResult: true }) as FakeTruncatedText).render(80)).toEqual([]);
+		expect(patch.renderCall({ input: "*** Begin Patch\n*** Update File:" }, theme, {})).toEqual({ original: "patch.call" });
+	});
+
+	test("apply_patch expanded, failed, partial-failed and unexpected results stay original", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const patch = session.getToolDefinition("apply_patch");
+		const result = { details: { preview: { files: [{ filePath: "a.ts" }], added: 1, removed: 0 } } };
+		const folded = patch.renderResult(result, {}, theme, {});
+		expect(patch.renderResult(result, { expanded: true }, theme, { lastComponent: folded })).toEqual({ original: "patch.result" });
+		expect((host.calls.at(-1)?.args[3] as { lastComponent?: unknown }).lastComponent).toBeUndefined();
+		for (const bad of [
+			{ ...result, isError: true },
+			{ details: { ...result.details, result: { failures: [{ filePath: "b.ts" }] } } },
+			{},
+			{ details: { preview: { files: [], added: 0, removed: 0 } } },
+			{ details: { preview: { files: [{ filePath: 4 }], added: 1, removed: 0 } } },
+		]) {
+			expect(patch.renderResult(bad, {}, theme, {})).toEqual({ original: "patch.result" });
+		}
+		expect(patch.renderResult(result, {}, theme, { isError: true })).toEqual({ original: "patch.result" });
 	});
 
 	test("todo collapsed keeps only its title line; expanded and errors use the original", async () => {
