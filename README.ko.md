@@ -20,31 +20,23 @@ memory insert notes/a.md
 
 ## 설치
 
-클론 없이 한 줄로 설치합니다. Windows (PowerShell 5.1):
-
-```powershell
-irm https://raw.githubusercontent.com/yjacket/omo-tool-fold/master/install.ps1 | iex
-```
-
-Linux, macOS:
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yjacket/omo-tool-fold/master/install.sh | sh
+omo install git:github.com/yjacket/omo-tool-fold
 ```
 
-스크립트가 이 저장소 `master` 브랜치에서 `extension/tool-fold.ts`와 `themes/grok-day-focus.json`을 받아 `~/.omo/agent/extensions/`와 `~/.omo/agent/themes/`에 넣습니다. 폴더가 없으면 만들고, 파일은 끝까지 다 받은 뒤에 기존 파일과 바꿉니다. 클론한 폴더에서 `.\install.ps1`이나 `sh install.sh`로 실행하면 받지 않고 그 폴더의 파일을 복사합니다. 파일마다 `installed -> <destination>`을 출력합니다. 실행 중인 omo 세션은 다음 유휴 시점에 확장을 읽어 들이며, 바로 적용하려면 `/reload`를 입력하면 됩니다. `settings.json`을 비롯해 다른 파일은 건드리지 않고, 여러 번 실행해도 안전합니다.
+omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클론하고 `~/.omo/agent/settings.json`의 `packages`에 등록합니다. 실행 중인 세션에서 `/reload`를 입력하세요.
 
-Windows에서는 PowerShell 줄을 쓰세요. Git Bash의 curl은 Windows 인증서 저장소를 읽지 않아 인증서 오류(60)로 실패할 수 있습니다.
+**업데이트:** `omo update --extensions`(설치된 패키지 전부) 또는 `omo update git:github.com/yjacket/omo-tool-fold`를 실행한 뒤 `/reload`를 입력하세요.
 
-테마를 쓰려면 `~/.omo/agent/settings.json`에 다음을 넣습니다.
+테마 `grok-day-focus`는 패키지에 함께 들어 있습니다. 쓰려면 `~/.omo/agent/settings.json`에 다음을 넣습니다.
 
 ```json
 "theme": "grok-day-focus"
 ```
 
-**업데이트:** 같은 줄을 다시 실행합니다.
+예전 복사 스크립트로 설치했다면 `~/.omo/agent/extensions/tool-fold.ts`와 `~/.omo/agent/themes/grok-day-focus.json`을 지우세요. 남겨 두면 패키지와 함께 로드됩니다.
 
-**제거:** `~/.omo/agent/extensions/tool-fold.ts`를 지우고 `/reload` 하거나 omo를 다시 시작합니다. reload 때 확장이 디스패치 대상을 비우므로 원래 표시로 돌아갑니다. 이 경로는 테스트로 확인했고 실제 세션에서는 확인하지 않았습니다. 테마를 바꿨다면 `"grok-day"`로 되돌리세요.
+**제거:** `omo remove git:github.com/yjacket/omo-tool-fold`를 실행하고 `/reload` 하거나 omo를 다시 시작합니다. reload 때 확장이 디스패치 대상을 비우므로 원래 표시로 돌아갑니다. 이 경로는 테스트로 확인했고 실제 세션에서는 확인하지 않았습니다. 테마를 바꿨다면 `"grok-day"`로 되돌리세요.
 
 ## 접히는 도구와 접히지 않는 도구
 

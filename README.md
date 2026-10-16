@@ -20,31 +20,23 @@ A still-running eval cell shows its state word (for example `running`) in place 
 
 ## Install
 
-One line, no clone needed. Windows (PowerShell 5.1):
-
-```powershell
-irm https://raw.githubusercontent.com/yjacket/omo-tool-fold/master/install.ps1 | iex
-```
-
-Linux, macOS:
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yjacket/omo-tool-fold/master/install.sh | sh
+omo install git:github.com/yjacket/omo-tool-fold
 ```
 
-The script downloads `extension/tool-fold.ts` and `themes/grok-day-focus.json` from this repository's `master` branch into `~/.omo/agent/extensions/` and `~/.omo/agent/themes/`, creating the folders if needed. Each file is fully downloaded before it replaces the installed one. Run from a clone (`.\install.ps1` or `sh install.sh`), it copies the local files instead. It prints `installed -> <destination>` for each file. Running omo sessions pick up the extension at their next idle point, or type `/reload`. It never touches `settings.json` or anything else, and re-running is safe.
+omo clones the repository into `~/.omo/agent/git/github.com/yjacket/omo-tool-fold` and adds it to `packages` in `~/.omo/agent/settings.json`. Type `/reload` in running sessions.
 
-On Windows use the PowerShell line: Git Bash's curl may fail with certificate error 60 because it does not read the Windows certificate store.
+**Update:** `omo update --extensions` (every installed package) or `omo update git:github.com/yjacket/omo-tool-fold`, then `/reload`.
 
-To use the theme, set this in `~/.omo/agent/settings.json`:
+The theme `grok-day-focus` comes with the package. To use it, set this in `~/.omo/agent/settings.json`:
 
 ```json
 "theme": "grok-day-focus"
 ```
 
-**Update:** run the same line again.
+If you installed with the old copy scripts, delete `~/.omo/agent/extensions/tool-fold.ts` and `~/.omo/agent/themes/grok-day-focus.json`, or they load next to the package.
 
-**Uninstall:** delete `~/.omo/agent/extensions/tool-fold.ts`, then `/reload` or restart omo. The reload clears the extension's dispatch target, so originals render again. This path is covered by the tests but hasn't been checked live. If you set the theme, change it back to `"grok-day"`.
+**Uninstall:** `omo remove git:github.com/yjacket/omo-tool-fold`, then `/reload` or restart omo. The reload clears the extension's dispatch target, so originals render again. This path is covered by the tests but hasn't been checked live. If you set the theme, change it back to `"grok-day"`.
 
 ## Which tools fold and which don't
 

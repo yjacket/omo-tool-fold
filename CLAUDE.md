@@ -11,10 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```sh
 bun test
 bun test -t "<name substring>"
-sh install.sh   |   .\install.ps1
+omo install <path-to-this-clone>   # loads the working tree; /reload picks up edits
 ```
 
-From a clone the install scripts copy the local files. Piped from GitHub (the one-liners in README.md) they download both files from `master` to a temp file first, then replace the installed copy, so a failed download never leaves a partial `.ts` in the extensions folder for hot reload to pick up.
+It ships as an omo package: `package.json` `pi` names `extension/tool-fold.ts` and the `themes/` folder, and users install it with `omo install git:github.com/yjacket/omo-tool-fold`.
 
 The package requires Bun >= 1.4. Tests use `bun:test` mock.module fakes and import a fresh module with a `?case=` query. They do not use a live OMO session. Tests must not use sleeps.
 

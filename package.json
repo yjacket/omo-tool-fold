@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "Senpi/OMO extension: while tool output is collapsed, each tool call shows one line (which tool + what it did); Ctrl+O shows the full output. Plus grok-day-focus, a theme that makes your own messages stand out over tool boxes.",
+  "pi": {
+    "extensions": [
+      "extension/tool-fold.ts"
+    ],
+    "themes": [
+      "themes"
+    ]
+  },
   "scripts": {
     "test": "bun test"
   },
