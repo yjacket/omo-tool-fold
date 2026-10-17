@@ -2,7 +2,7 @@
 
 [English](README.md) | 한국어
 
-도구 출력이 접힌 상태일 때(TUI 기본값, Ctrl+O로 전환) 도구 호출 하나를 한 줄로 줄여 보여 주는 OMO(senpi) 확장입니다. 각 줄에는 도구 이름과 한 일이 나오므로, 긴 세션도 상자 더미가 아니라 로그처럼 읽힙니다. Ctrl+O로 펼치면 모든 도구가 원래 전체 출력을 그대로 보여 줍니다. 내 메시지는 파란 기운, 도구 상자는 거의 흰색으로 바꾼 밝은 테마 `grok-day-focus`도 함께 들어 있습니다.
+도구 출력이 접힌 상태일 때(TUI 기본값, Ctrl+O로 전환) 도구 호출 하나를 한 줄로 줄여 보여 주는 OMO(senpi) 확장입니다. 각 줄에는 도구 이름과 한 일이 나오므로, 긴 세션도 상자 더미가 아니라 로그처럼 읽힙니다. Ctrl+O로 펼치면 모든 도구가 원래 전체 출력을 그대로 보여 줍니다. 숨긴 사고가 끝나면 `Thought:` 줄이 남지 않고, 연달아 부른 eval은 짧은 묶음 하나로 보입니다. 내 메시지는 파란 기운, 도구 상자는 거의 흰색으로 바꾼 밝은 테마 `grok-day-focus`도 함께 들어 있습니다.
 
 ## 화면에 보이는 것
 
@@ -17,6 +17,19 @@ memory insert notes/a.md
 ```
 
 실행 중인 eval 셀은 `✓` 자리에 상태 단어(예: `running`)가 나옵니다. 나머지 접히는 도구는 실행 중일 때 끝에 ` …`가 붙습니다.
+
+연달아 부른 eval은 한 묶음으로 보입니다.
+
+```
+eval js ✓ Read config files and list extension folder
+
+• Ran 3 evals
+  └ js ✓ 저장소 상태 확인
+    js ✓ 스킬 읽기
+    py ✓ 데이터 분석
+```
+
+앞뒤에 eval이 없는 eval 하나는 위 첫 줄처럼 그대로 한 줄입니다.
 
 ## 설치
 
@@ -57,6 +70,22 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 
 결과가 오류이면(`result.isError` 또는 렌더 컨텍스트의 `isError`) 원래 전체 출력을 보여 줍니다.
 
+## 끝난 사고 줄
+
+- 숨긴 사고가 끝나면 아무 줄도 남지 않습니다. `Thought: 1ms`도, 빈 줄도 없습니다.
+- 사고가 아직 진행 중이면 `Thinking...` 표시는 그대로 있습니다.
+- Ctrl+T(사고 보기)를 누르면 라벨과 본문이 전처럼 보입니다.
+- 줄이 없어졌으니 사고 줄 하나를 클릭해서 여는 기능도 없어졌습니다. Ctrl+T를 쓰세요.
+
+## 연속 eval 묶음
+
+- 이미 한 줄로 접히는 eval만 묶음에 들어갑니다. 실패, 취소, 상태를 알 수 없는 eval은 묶음을 끝내고 원래 상자를 그대로 보여 줍니다. peek, stop, list 호출도 묶음을 끝냅니다.
+- 사이에 숨긴 사고만 있는 어시스턴트 단계가 끼어도 묶음은 이어집니다.
+- 다른 도구가 나오면 묶음이 끊깁니다.
+- Ctrl+O를 누르거나 머리 줄을 클릭하면 머리 줄 아래에 원래 상자들이 나옵니다. 한 번 더 하면 다시 접힙니다.
+- 아직 실행 중인 eval이 있으면 머리 줄에 스피너가 돌고 `Running N evals`로 바뀝니다. 그 eval 줄에는 `py running 데이터 분석`처럼 상태 단어가 나옵니다.
+- 줄 수 제한은 없습니다.
+
 ## 테마
 
 `grok-day-focus`는 senpi 내장 `grok-day` 테마를 복사해서 값 네 개만 바꾼 것입니다.
@@ -74,9 +103,15 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 
 senpi에는 다른 확장이 만든 도구의 그리기 방식을 바꾸는 공개 API가 없습니다. 그래서 이 확장은 `@code-yeongyu/senpi`에서 가져온 `AgentSession.prototype.getToolDefinition`(TUI가 도구 렌더러를 찾을 때 쓰는 조회 함수)을 감쌉니다. 한 줄은 `@earendil-works/pi-tui`의 `TruncatedText`로 그립니다. 둘 다 내부 구현이며, 동적으로 import하고 존재 여부를 확인한 뒤 씁니다.
 
+새 기능은 접점 두 곳을 더 씁니다. 각각 따로 존재 여부를 확인합니다.
+
+- `AssistantMessageComponent.prototype.reconcileRenderDescriptors`: 끝난 사고 줄을 숨깁니다.
+- `InteractiveMode.prototype.createToolExecutionComponent`: 이걸 거쳐 대화 기록 컨테이너의 `project()`에 닿고, 거기서 eval을 묶습니다. 묶음은 화면에 그릴 목록만 바꿉니다. `chatContainer.children`과 저장된 결과는 건드리지 않습니다.
+
 안전장치:
 
 - 업데이트 후 둘 중 하나라도 없으면 아무것도 하지 않고 세션 시작 때 경고 한 줄만 띄웁니다: `tool-fold 꺼짐 (<reason>). 도구 표시는 원래대로 보입니다.`
+- 새 접점만 없으면 그 부분만 꺼지고 경고 한 줄이 뜹니다: `tool-fold 일부 꺼짐 (<부분>: <이유>). 그 부분은 원래대로 보입니다.`
 - 렌더 호출은 전부 감싸 두었습니다. 예외가 나거나 데이터 모양이 예상과 다르면 원래 렌더러로 넘깁니다.
 - 저장된 도구 결과는 절대 바꾸지 않습니다. 표시만 바꿉니다.
 - 원래 렌더러를 부르기 전에 `context.lastComponent`에서 자기 한 줄 컴포넌트를 치웁니다. edit의 원래 `renderResult`가 `lastComponent.detachAll()`을 호출하기 때문에, 이걸 안 하면 Ctrl+O에서 죽습니다.
@@ -87,9 +122,12 @@ senpi에는 다른 확장이 만든 도구의 그리기 방식을 바꾸는 공�
 ## 한계와 테스트한 버전
 
 - senpi 내부 구현에 기대고 있어서 OMO 업데이트로 꺼질 수 있습니다. 그때는 위 경고가 뜨고 원래 표시로 돌아갑니다.
+- 사고 줄 숨김과 eval 묶음이 쓰는 접점도 senpi 내부 구현입니다. 그쪽이 바뀌면 해당 부분만 꺼집니다.
 - senpi 테마 파일은 필수 색상 토큰을 전부 정의해야 합니다. OMO 업데이트로 필수 토큰이 늘면 `grok-day-focus`가 로드되지 않을 수 있습니다. 죽지 않고 건너뛸 것으로 보지만 확인하지는 않았습니다. 고치려면 설치된 senpi에서 새 `grok-day.json`을 복사해 값 네 개를 다시 바꾸면 됩니다.
 
 테스트 환경: OMO 바이너리 5.1.12 (npm `omo-ai` 5.1.17, `@code-yeongyu/senpi` 2026.10.8), Windows 11, Bun 1.4.2.
+
+사고 줄 숨김과 eval 묶음 테스트 환경: `@code-yeongyu/senpi` 2026.10.13 (npm `omo-ai` 5.1.33), Windows 11, Bun 1.4.2. 실제 senpi 컴포넌트와 격리된 재생으로 확인했고, 사용자의 실제 세션에서는 확인하지 않았습니다.
 
 ## 개발
 

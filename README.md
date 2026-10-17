@@ -2,7 +2,7 @@
 
 English | [한국어](README.ko.md)
 
-An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
+An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. Finished hidden thinking leaves no `Thought:` line, and two or more evals in a row read as one short block. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
 
 ## What you see
 
@@ -17,6 +17,19 @@ memory insert notes/a.md
 ```
 
 A still-running eval cell shows its state word (for example `running`) in place of `✓`. Other folded tools get ` …` appended while they run.
+
+Consecutive evals share one block:
+
+```
+eval js ✓ Read config files and list extension folder
+
+• Ran 3 evals
+  └ js ✓ 저장소 상태 확인
+    js ✓ 스킬 읽기
+    py ✓ 데이터 분석
+```
+
+A lone eval with no eval next to it stays one line, as in the first line above.
 
 ## Install
 
@@ -57,6 +70,22 @@ Left alone on purpose:
 
 Any error result (`result.isError` or the render context's `isError`) shows the original full output.
 
+## Finished thinking
+
+- Hidden thinking that has finished leaves no line at all. No `Thought: 1ms`, no extra blank line.
+- While thinking is still running, the live `Thinking...` label stays.
+- Ctrl+T (show thinking) shows the label and the full body as before.
+- You can't click a single thinking line to open it anymore, because the line is gone. Use Ctrl+T.
+
+## Consecutive eval calls
+
+- Only evals that already fold to one line join a block. Failed, cancelled and unknown-status evals end the block and keep their full box. peek, stop and list calls also end the block.
+- Assistant steps that hold only hidden thinking don't break the block.
+- Any other tool breaks it.
+- Ctrl+O, or a click on the header, shows the original boxes under the header. Do it again to fold them back.
+- While any member is still running, the header shows a spinner and reads `Running N evals`. That member's line shows its state word, for example `py running 데이터 분석`.
+- The list has no line cap.
+
 ## Theme
 
 `grok-day-focus` is a copy of senpi's built-in `grok-day` with four values changed:
@@ -74,9 +103,15 @@ Any error result (`result.isError` or the render context's `isError`) shows the 
 
 Senpi has no public API for changing how another extension's tool is drawn. So this extension wraps `AgentSession.prototype.getToolDefinition`, the lookup the TUI uses to find tool renderers, imported from `@code-yeongyu/senpi`. It draws its one line with `TruncatedText` from `@earendil-works/pi-tui`. Both are internals, imported dynamically and feature-detected.
 
+Two more seams drive the newer features. Each one is feature-detected on its own:
+
+- `AssistantMessageComponent.prototype.reconcileRenderDescriptors` hides finished thinking lines.
+- `InteractiveMode.prototype.createToolExecutionComponent` reaches the transcript container's `project()`, which groups evals. Grouping changes only the drawn projection. It never touches `chatContainer.children` or stored results.
+
 Fail-safe behavior:
 
 - If either internal is missing after an update, the extension does nothing and shows one warning at session start: `tool-fold 꺼짐 (<reason>). 도구 표시는 원래대로 보입니다.`
+- If only a newer seam is missing, just that part turns off, with one warning: `tool-fold 일부 꺼짐 (<부분>: <이유>). 그 부분은 원래대로 보입니다.`
 - Every render call is wrapped. An exception or unexpected data falls back to the original renderer.
 - It never mutates the stored tool result. Folding is display only.
 - Before calling an original renderer it removes its own one-line component from `context.lastComponent`. Edit's original `renderResult` calls `lastComponent.detachAll()` and would otherwise crash on Ctrl+O.
@@ -87,9 +122,12 @@ Updates without restart: the prototype hook installs once per process (`Symbol.f
 ## Limitations and tested versions
 
 - It depends on senpi internals. An OMO update may turn it off, in which case you'll see the warning above and the normal display.
+- The thinking and eval-group seams are Senpi internals too. A change there turns off only that part.
 - A senpi theme file must define every required color token. If an OMO update adds one, `grok-day-focus` may stop loading. It's expected to be skipped rather than crash, but that's not verified. To fix it, copy the new `grok-day.json` from the installed senpi and re-apply the four values.
 
 Tested with OMO binary 5.1.12 (npm `omo-ai` 5.1.17, `@code-yeongyu/senpi` 2026.10.8) on Windows 11, Bun 1.4.2.
+
+Thinking hiding and eval blocks were tested with `@code-yeongyu/senpi` 2026.10.13 (npm `omo-ai` 5.1.33) on Windows 11, Bun 1.4.2. That check used real Senpi components and an isolated replay, not the user's live sessions.
 
 ## Development
 
