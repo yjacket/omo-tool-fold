@@ -8,9 +8,34 @@ class FakeTruncatedText {
 	invalidate() {}
 }
 
+class FakeContainer {
+	children: unknown[] = [];
+	revision = 0;
+	render(width: number): string[] {
+		return this.children.flatMap((child) => (child as { render(w: number): string[] }).render(width));
+	}
+	handleMouse() {
+		return undefined;
+	}
+	bumpRenderRevision() {
+		this.revision++;
+	}
+	childRenderRevision() {
+		return this.revision;
+	}
+}
+
+const defaultTui = {
+	TruncatedText: FakeTruncatedText,
+	Container: FakeContainer,
+	truncateToWidth: (text: string, width: number) => text.slice(0, width),
+};
+
 type Call = { slot: string; args: unknown[] };
 
-function makeHost(options: { withMethod?: boolean } = {}) {
+type HostOptions = { withMethod?: boolean; withAssistant?: boolean; withInteractive?: boolean; withProject?: boolean };
+
+function makeHost(options: HostOptions = {}) {
 	const calls: Call[] = [];
 	const record = (slot: string) => (...args: unknown[]) => {
 		calls.push({ slot, args });
@@ -34,18 +59,67 @@ function makeHost(options: { withMethod?: boolean } = {}) {
 			return defs[name];
 		};
 	}
-	return { AgentSession, calls, defs };
+	class AssistantMessageComponent {
+		received: unknown;
+		isStreaming = false;
+		hasToolCalls = false;
+		hiddenThinkingLabel = "Thinking...";
+		isExplorationDetail = false;
+		reconcileRenderDescriptors(descriptors: unknown) {
+			this.received = descriptors;
+		}
+	}
+	class FakeTranscript {
+		children: unknown[] = [];
+		project() {
+			return this.children;
+		}
+	}
+	class NoProjectTranscript {
+		children: unknown[] = [];
+	}
+	class InteractiveMode {
+		chatContainer = options.withProject === false ? new NoProjectTranscript() : new FakeTranscript();
+		createToolExecutionComponent() {
+			return { created: true };
+		}
+	}
+	return {
+		AgentSession,
+		calls,
+		defs,
+		AssistantMessageComponent,
+		InteractiveMode,
+		FakeTranscript,
+		senpi: {
+			AgentSession,
+			AssistantMessageComponent: options.withAssistant === false ? undefined : AssistantMessageComponent,
+			InteractiveMode: options.withInteractive === false ? undefined : InteractiveMode,
+		},
+	};
 }
 
-async function load(host: ReturnType<typeof makeHost>, tui: Record<string, unknown> = { TruncatedText: FakeTruncatedText }) {
-	mock.module("@code-yeongyu/senpi", () => ({ AgentSession: host.AgentSession }));
+async function load(
+	host: ReturnType<typeof makeHost>,
+	tui: Record<string, unknown> = defaultTui,
+	options: { throwingTheme?: boolean } = {},
+) {
+	mock.module("@code-yeongyu/senpi", () => host.senpi);
 	mock.module("@earendil-works/pi-tui", () => tui);
 	const notices: string[] = [];
 	const handlers: Array<[string, (e: unknown, ctx: unknown) => void]> = [];
 	const pi = { on: (event: string, handler: (e: unknown, ctx: unknown) => void) => handlers.push([event, handler]) };
 	const mod = await import(`../extension/tool-fold.ts?case=${Math.random()}`);
 	await mod.default(pi);
-	const ctx = { ui: { notify: (msg: string) => notices.push(msg) } };
+	const ui = { notify: (msg: string) => notices.push(msg) };
+	if (options.throwingTheme) {
+		Object.defineProperty(ui, "theme", {
+			get() {
+				throw new Error("theme gone");
+			},
+		});
+	}
+	const ctx = { ui };
 	const fire = (event: string, payload: unknown) => {
 		for (const [name, handler] of handlers) if (name === event) handler(payload, ctx);
 	};
@@ -277,5 +351,184 @@ describe("tool-fold", () => {
 		const { session } = await load(host);
 		const out = session.getToolDefinition("eval").renderResult(okEval, {}, undefined, {});
 		expect((out as FakeTruncatedText).text).toBe("eval js ✓ 규칙 조사");
+	});
+});
+
+const S = { kind: "spacer", text: "" };
+const L = { kind: "thinking-label", text: "Thought: 1ms", thinkingRun: 0 };
+
+type Card = { presentationSnapshot: unknown; render(width: number): string[] };
+type Grouped = { render(width: number): string[] };
+
+function evalCard(definition: unknown, label: string, result: unknown = okEval, args: unknown = {}): Card {
+	return {
+		presentationSnapshot: {
+			presentation: "classic",
+			identity: { toolName: "eval", toolDefinition: definition },
+			state: { args, result, isPartial: false, expanded: false },
+		},
+		render: () => [`CARD ${label}`],
+	};
+}
+
+/** Creates an InteractiveMode whose transcript holds `cards`, and runs the real tool-card creation path once. */
+function transcript(host: ReturnType<typeof makeHost>, cards: unknown[]) {
+	const im = new host.InteractiveMode();
+	im.chatContainer.children.push(...cards);
+	const created = im.createToolExecutionComponent();
+	return { im, created, project: () => (im.chatContainer as { project(): unknown[] }).project() };
+}
+
+describe("tool-fold thinking labels and eval blocks", () => {
+	test("a full host loads with zero notices", async () => {
+		const { notices } = await load(makeHost());
+		expect(notices).toEqual([]);
+	});
+
+	test("a finished hidden thinking label reaches the original renderer as nothing", async () => {
+		const host = makeHost();
+		await load(host);
+		const message = new host.AssistantMessageComponent();
+		message.reconcileRenderDescriptors([S, L]);
+		expect(message.received).toEqual([]);
+	});
+
+	test("after a reload shutdown the original receives the descriptors by reference", async () => {
+		const host = makeHost();
+		const { fire } = await load(host);
+		fire("session_shutdown", { reason: "reload" });
+		const message = new host.AssistantMessageComponent();
+		const descriptors = [S, L];
+		message.reconcileRenderDescriptors(descriptors);
+		expect(message.received).toBe(descriptors);
+	});
+
+	test("hostile descriptors pass through to the original unchanged", async () => {
+		const host = makeHost();
+		await load(host);
+		const hostile = new Proxy([S, L], {
+			get(target, key, receiver) {
+				if (typeof key === "string" && /^\d+$/.test(key)) throw new Error("shape changed");
+				return Reflect.get(target, key, receiver);
+			},
+		});
+		const message = new host.AssistantMessageComponent();
+		message.reconcileRenderDescriptors(hostile);
+		expect(message.received).toBe(hostile);
+	});
+
+	test("two folded eval cards project to one Ran 2 evals block", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		const { project } = transcript(host, [evalCard(def, "a"), evalCard(def, "b")]);
+		const out = project();
+		expect(out.length).toBe(1);
+		expect((out[0] as Grouped).render(80)).toEqual(["", "• Ran 2 evals", "  └ js ✓ 규칙 조사", "    js ✓ 규칙 조사"]);
+	});
+
+	test("projecting the same children array twice returns the same output array", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		const { project } = transcript(host, [evalCard(def, "a"), evalCard(def, "b")]);
+		expect(project()).toBe(project());
+	});
+
+	test("eval cards whose definition this extension did not wrap are not grouped", async () => {
+		const host = makeHost();
+		await load(host);
+		const foreign = { renderCall() {}, renderResult() {} };
+		const { im, project } = transcript(host, [evalCard(foreign, "a"), evalCard(foreign, "b")]);
+		expect(project()).toBe(im.chatContainer.children);
+	});
+
+	test("a failed eval breaks the run and keeps its own card", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		const first = evalCard(def, "a");
+		const failed = evalCard(def, "err", { isError: true, details: okEval.details });
+		const { project } = transcript(host, [first, failed, evalCard(def, "b"), evalCard(def, "c")]);
+		const out = project();
+		expect(out.length).toBe(3);
+		expect(out[0]).toBe(first);
+		expect(out[1]).toBe(failed);
+		expect((out[2] as Grouped).render(80)[1]).toBe("• Ran 2 evals");
+	});
+
+	test("a peek control card between two runs breaks the run even without details.action", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		const control = { details: { cells: [{ status: "complete", language: "js", summary: "규칙 조사" }] } };
+		const peek = evalCard(def, "peek", control, { action: "peek", cell_id: "c1" });
+		const { im, project } = transcript(host, [evalCard(def, "a"), peek, evalCard(def, "b")]);
+		expect(project()).toBe(im.chatContainer.children);
+	});
+
+	test("a transcript without project() gives one late notice and cards are still created", async () => {
+		const host = makeHost({ withProject: false });
+		const { notices } = await load(host);
+		const { created } = transcript(host, []);
+		transcript(host, []);
+		expect(created).toEqual({ created: true });
+		expect(notices.length).toBe(1);
+		expect(notices[0]).toContain("eval 묶음");
+	});
+
+	test("a host without InteractiveMode notices eval grouping off and still hides thinking", async () => {
+		const host = makeHost({ withInteractive: false });
+		const { notices } = await load(host);
+		expect(notices.length).toBe(1);
+		expect(notices[0]).toContain("eval 묶음");
+		const message = new host.AssistantMessageComponent();
+		message.reconcileRenderDescriptors([S, L]);
+		expect(message.received).toEqual([]);
+	});
+
+	test("a host without AssistantMessageComponent notices thinking hiding off", async () => {
+		const { notices } = await load(makeHost({ withAssistant: false }));
+		expect(notices.length).toBe(1);
+		expect(notices[0]).toContain("사고 줄 숨김");
+	});
+
+	test("loading twice does not double-wrap the thinking, card and projection hooks", async () => {
+		const host = makeHost();
+		const amc = host.AssistantMessageComponent.prototype as unknown as Record<string, unknown>;
+		const imp = host.InteractiveMode.prototype as unknown as Record<string, unknown>;
+		const transcriptProto = host.FakeTranscript.prototype as unknown as Record<string, unknown>;
+		await load(host);
+		transcript(host, []);
+		const once = [amc.reconcileRenderDescriptors, imp.createToolExecutionComponent, transcriptProto.project];
+		await load(host);
+		transcript(host, []);
+		expect(amc.reconcileRenderDescriptors).toBe(once[0]);
+		expect(imp.createToolExecutionComponent).toBe(once[1]);
+		expect(transcriptProto.project).toBe(once[2]);
+	});
+
+	test("a throwing theme makes the block render its member cards and gives one notice", async () => {
+		const host = makeHost();
+		const { session, notices } = await load(host, defaultTui, { throwingTheme: true });
+		const def = session.getToolDefinition("eval");
+		const { project } = transcript(host, [evalCard(def, "a"), evalCard(def, "b")]);
+		const group = project()[0] as Grouped;
+		expect(group.render(80)).toEqual(["CARD a", "CARD b"]);
+		expect(group.render(80)).toEqual(["CARD a", "CARD b"]);
+		// The notice is queued: a render pass must not notify from inside the frame.
+		expect(notices).toEqual([]);
+		await Promise.resolve();
+		expect(notices.length).toBe(1);
+		expect(notices[0]).toContain("eval 묶음");
+	});
+
+	test("with the core fold off, marked eval cards are projected unchanged", async () => {
+		const host = makeHost();
+		const { session } = await load(host, { TruncatedText: undefined });
+		const marked = { ...session.getToolDefinition("eval") };
+		(marked as Record<PropertyKey, unknown>)[Symbol.for("omo.tool-fold.wrapped.v2")] = true;
+		const { im, project } = transcript(host, [evalCard(marked, "a"), evalCard(marked, "b")]);
+		expect(project()).toBe(im.chatContainer.children);
 	});
 });
