@@ -2,7 +2,7 @@
 
 English | [한국어](README.ko.md)
 
-An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. Finished hidden thinking leaves no `Thought:` line, and two or more evals in a row read as one short block. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
+An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. Finished hidden thinking leaves no `Thought:` line, and two or more folded tool calls in a row (eval, edit, write, ...) read as one short block. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
 
 ## What you see
 
@@ -18,15 +18,19 @@ memory insert notes/a.md
 
 A still-running eval cell shows its state word (for example `running`) in place of `✓`. Other folded tools get ` …` appended while they run.
 
-Consecutive evals share one block:
+Consecutive folded calls share one block. An all-eval run keeps the short form; a mixed run counts each tool:
 
 ```
-eval js ✓ Read config files and list extension folder
-
 • Ran 3 evals
   └ js ✓ 저장소 상태 확인
     js ✓ 스킬 읽기
     py ✓ 데이터 분석
+
+• Ran 4 tools · eval 1 · edit 2 · write 1
+  └ eval js ✓ 설정 확인
+    edit extension/tool-fold.ts (+12/-3)
+    edit README.md (+4/-1)
+    write notes/plan.md
 ```
 
 A lone eval with no eval next to it stays one line, as in the first line above.
@@ -77,13 +81,13 @@ Any error result (`result.isError` or the render context's `isError`) shows the 
 - Ctrl+T (show thinking) shows the label and the full body as before.
 - You can't click a single thinking line to open it anymore, because the line is gone. Use Ctrl+T.
 
-## Consecutive eval calls
+## Consecutive folded calls
 
-- Only evals that already fold to one line join a block. Failed, cancelled and unknown-status evals end the block and keep their full box. peek, stop and list calls also end the block.
+- Every tool this extension folds (eval, edit, apply_patch, write and the other one-line tools above) can join a block, but only while its card is folded to one line. Failed calls, apply_patch with failed hunks, cancelled and unknown-status evals end the block and keep their full box. Eval peek, stop and list calls and the todo checklist also end the block.
 - Assistant steps that hold only hidden thinking don't break the block.
-- Any other tool breaks it.
+- A tool this extension leaves unfolded (read, grep, find, ls, ask_user_question, ...) breaks it.
 - Ctrl+O, or a click on the header, shows the original boxes under the header. Do it again to fold them back.
-- While any member is still running, the header shows a spinner and reads `Running N evals`. That member's line shows its state word, for example `py running 데이터 분석`.
+- While any member is still running, the header shows a spinner and reads `Running N evals` (or `Running N tools · ...`). That member's line shows its state word, for example `py running 데이터 분석`.
 - The list has no line cap.
 
 ## Theme

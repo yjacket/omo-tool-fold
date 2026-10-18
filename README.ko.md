@@ -2,7 +2,7 @@
 
 [English](README.md) | 한국어
 
-도구 출력이 접힌 상태일 때(TUI 기본값, Ctrl+O로 전환) 도구 호출 하나를 한 줄로 줄여 보여 주는 OMO(senpi) 확장입니다. 각 줄에는 도구 이름과 한 일이 나오므로, 긴 세션도 상자 더미가 아니라 로그처럼 읽힙니다. Ctrl+O로 펼치면 모든 도구가 원래 전체 출력을 그대로 보여 줍니다. 숨긴 사고가 끝나면 `Thought:` 줄이 남지 않고, 연달아 부른 eval은 짧은 묶음 하나로 보입니다. 내 메시지는 파란 기운, 도구 상자는 거의 흰색으로 바꾼 밝은 테마 `grok-day-focus`도 함께 들어 있습니다.
+도구 출력이 접힌 상태일 때(TUI 기본값, Ctrl+O로 전환) 도구 호출 하나를 한 줄로 줄여 보여 주는 OMO(senpi) 확장입니다. 각 줄에는 도구 이름과 한 일이 나오므로, 긴 세션도 상자 더미가 아니라 로그처럼 읽힙니다. Ctrl+O로 펼치면 모든 도구가 원래 전체 출력을 그대로 보여 줍니다. 숨긴 사고가 끝나면 `Thought:` 줄이 남지 않고, 연달아 부른 접히는 도구(eval, edit, write 등)는 짧은 묶음 하나로 보입니다. 내 메시지는 파란 기운, 도구 상자는 거의 흰색으로 바꾼 밝은 테마 `grok-day-focus`도 함께 들어 있습니다.
 
 ## 화면에 보이는 것
 
@@ -18,15 +18,19 @@ memory insert notes/a.md
 
 실행 중인 eval 셀은 `✓` 자리에 상태 단어(예: `running`)가 나옵니다. 나머지 접히는 도구는 실행 중일 때 끝에 ` …`가 붙습니다.
 
-연달아 부른 eval은 한 묶음으로 보입니다.
+연달아 부른 접히는 도구는 한 묶음으로 보입니다. eval만 있으면 짧은 형태를, 여러 도구가 섞이면 도구별 개수를 보여 줍니다.
 
 ```
-eval js ✓ Read config files and list extension folder
-
 • Ran 3 evals
   └ js ✓ 저장소 상태 확인
     js ✓ 스킬 읽기
     py ✓ 데이터 분석
+
+• Ran 4 tools · eval 1 · edit 2 · write 1
+  └ eval js ✓ 설정 확인
+    edit extension/tool-fold.ts (+12/-3)
+    edit README.md (+4/-1)
+    write notes/plan.md
 ```
 
 앞뒤에 eval이 없는 eval 하나는 위 첫 줄처럼 그대로 한 줄입니다.
@@ -77,13 +81,13 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 - Ctrl+T(사고 보기)를 누르면 라벨과 본문이 전처럼 보입니다.
 - 줄이 없어졌으니 사고 줄 하나를 클릭해서 여는 기능도 없어졌습니다. Ctrl+T를 쓰세요.
 
-## 연속 eval 묶음
+## 연속 도구 묶음
 
-- 이미 한 줄로 접히는 eval만 묶음에 들어갑니다. 실패, 취소, 상태를 알 수 없는 eval은 묶음을 끝내고 원래 상자를 그대로 보여 줍니다. peek, stop, list 호출도 묶음을 끝냅니다.
+- 이 확장이 접는 도구(eval, edit, apply_patch, write와 위의 한 줄 도구들)는 모두 묶음에 들어갈 수 있습니다. 단, 카드가 한 줄로 접혀 있을 때만입니다. 실패한 호출, 일부 헌크가 실패한 apply_patch, 취소되거나 상태를 알 수 없는 eval은 묶음을 끝내고 원래 상자를 그대로 보여 줍니다. eval의 peek, stop, list 호출과 todo 체크리스트도 묶음을 끝냅니다.
 - 사이에 숨긴 사고만 있는 어시스턴트 단계가 끼어도 묶음은 이어집니다.
-- 다른 도구가 나오면 묶음이 끊깁니다.
+- 이 확장이 접지 않는 도구(read, grep, find, ls, ask_user_question 등)가 나오면 묶음이 끊깁니다.
 - Ctrl+O를 누르거나 머리 줄을 클릭하면 머리 줄 아래에 원래 상자들이 나옵니다. 한 번 더 하면 다시 접힙니다.
-- 아직 실행 중인 eval이 있으면 머리 줄에 스피너가 돌고 `Running N evals`로 바뀝니다. 그 eval 줄에는 `py running 데이터 분석`처럼 상태 단어가 나옵니다.
+- 아직 실행 중인 eval이 있으면 머리 줄에 스피너가 돌고 `Running N evals`(섞인 묶음은 `Running N tools · ...`)로 바뀝니다. 그 eval 줄에는 `py running 데이터 분석`처럼 상태 단어가 나옵니다.
 - 줄 수 제한은 없습니다.
 
 ## 테마

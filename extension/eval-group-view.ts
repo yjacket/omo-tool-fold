@@ -1,10 +1,25 @@
 /**
- * Non-owning Codex-style view over a run of consecutive eval cards. `Container`,
+ * Non-owning Codex-style view over a run of consecutive folded tool cards. `Container`,
  * `truncateToWidth` and the theme accessor are injected, so this module depends on
  * neither senpi nor pi-tui.
  */
 
-type BodyLine = { language: string; status: string; what: string };
+type BodyLine = { language: string; status: string; what: string; tool?: string; text?: string };
+
+const isEval = (line: BodyLine): boolean => line.tool === undefined || line.tool === "eval";
+
+/** "Ran 2 evals" for an eval-only run; otherwise "Ran 5 tools · eval 2 · edit 3" in first-seen order. */
+function headerText(lines: readonly BodyLine[], pending: boolean): string {
+	const count = lines.length;
+	if (lines.every(isEval)) return pending ? `Running ${count} evals` : `Ran ${count} evals`;
+	const counts = new Map<string, number>();
+	for (const line of lines) {
+		const name = line.tool ?? "eval";
+		counts.set(name, (counts.get(name) ?? 0) + 1);
+	}
+	const parts = [...counts].map(([name, n]) => `${name} ${n}`).join(" · ");
+	return `${pending ? "Running" : "Ran"} ${count} tools · ${parts}`;
+}
 
 type Theme = { fg?: (color: string, text: string) => string; bold?: (text: string) => string } | undefined;
 
@@ -84,7 +99,7 @@ export function createEvalGroupClass<C extends ContainerInstance>(
 			this.lines = [...lines];
 			this.cards = [...cards];
 			// Card lines are cached per card revision, so unchanged text means an unchanged body.
-			const bodyKey = lines.map((line) => `${line.language}\u0000${line.status}\u0000${line.what}`).join("\u0001");
+			const bodyKey = lines.map((line) => `${line.tool ?? ""}\u0000${line.language}\u0000${line.status}\u0000${line.what}\u0000${line.text ?? ""}`).join("\u0001");
 			if (bodyKey !== this.bodyKey) {
 				this.bodyKey = bodyKey;
 				this.bumpRenderRevision?.();
@@ -97,15 +112,20 @@ export function createEvalGroupClass<C extends ContainerInstance>(
 				const theme = getTheme();
 				const fg = (color: string, text: string) => (typeof theme?.fg === "function" ? theme.fg(color, text) : text);
 				const bold = (text: string) => (typeof theme?.bold === "function" ? theme.bold(text) : text);
-				const count = this.lines.length;
 				const pending = this.lines.some((line) => line.status !== "complete");
 				const frame = FRAMES[Math.floor(Date.now() / SPINNER_FRAME_MS) % FRAMES.length] ?? "⠋";
 				const marker = pending ? fg("accent", frame) : fg("dim", "•");
-				const header = `${marker} ${bold(pending ? `Running ${count} evals` : `Ran ${count} evals`)}`;
+				const header = `${marker} ${bold(headerText(this.lines, pending))}`;
 				const out = ["", truncateToWidth(header, width)];
+				// In a mixed block every line names its tool, so eval lines get the title the others already carry.
+				const evalTitle = this.lines.every(isEval) ? "" : `${bold("eval")} `;
 				if (this.expanded) return [...out, ...super.render(width)];
 				for (const [index, line] of this.lines.entries()) {
 					const prefix = index === 0 ? fg("dim", "  └ ") : "    ";
+					if (!isEval(line)) {
+						out.push(truncateToWidth(`${prefix}${line.text ?? line.what}`, width));
+						continue;
+					}
 					const state =
 						line.status === "complete"
 							? fg("success", "✓")
@@ -113,7 +133,7 @@ export function createEvalGroupClass<C extends ContainerInstance>(
 								? fg("muted", "…")
 								: fg("muted", line.status);
 					const language = line.language ? `${fg("muted", line.language)} ` : "";
-					out.push(truncateToWidth(`${prefix}${language}${state} ${line.what}`, width));
+					out.push(truncateToWidth(`${prefix}${evalTitle}${language}${state} ${line.what}`, width));
 				}
 				return out;
 			} catch (error) {

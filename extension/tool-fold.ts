@@ -18,7 +18,7 @@ const OWN = Symbol.for("omo.tool-fold.component");
 const THINKING_HOOK = Symbol.for("omo.tool-fold.thinking-hook.v1");
 const GROUP_HOOK = Symbol.for("omo.tool-fold.group-hook.v1");
 const PROJECT_HOOK = Symbol.for("omo.tool-fold.project-hook.v1");
-const GROUP_PART = "eval 묶음";
+const GROUP_PART = "도구 묶음";
 const LIVE_EVAL_STATES = new Set(["pending", "queued", "running", "detached"]);
 const COMPACT_TOOLS = new Set([
 	"web_search",
@@ -365,7 +365,7 @@ type GroupBase = new () => { children: unknown[]; render(width: number): string[
 type CardSnapshot = {
 	presentation?: unknown;
 	identity?: { toolName?: unknown; toolDefinition?: Record<PropertyKey, unknown> };
-	state?: { args?: unknown; result?: unknown };
+	state?: { args?: unknown; result?: unknown; isPartial?: unknown };
 };
 type ImplDeps = {
 	/** Undefined when the core folding is off: plans are then disabled and only the new seams act. */
@@ -379,15 +379,35 @@ function partialNotice(parts: string): string {
 	return `tool-fold 일부 꺼짐 (${parts}). 그 부분은 원래대로 보입니다.`;
 }
 
-/** A card joins an eval block only when its collapsed render is this extension's one-liner. */
-function snapshotLine(snapshot: CardSnapshot | undefined): MemberLine | undefined {
-	if (snapshot?.presentation !== "classic" || snapshot.identity?.toolName !== "eval") return undefined;
-	if (snapshot.identity.toolDefinition?.[WRAPPED] !== true) return undefined;
+/**
+ * A card joins a block only when its collapsed render is this extension's one-liner: eval keeps
+ * its own parts, every other folded tool (edit, apply_patch, write, ...) contributes its fold line.
+ */
+function snapshotLine(snapshot: CardSnapshot | undefined, getTheme: () => Theme): MemberLine | undefined {
+	if (snapshot?.presentation !== "classic") return undefined;
+	const tool = snapshot.identity?.toolName;
+	if (typeof tool !== "string" || snapshot.identity?.toolDefinition?.[WRAPPED] !== true) return undefined;
 	const state = snapshot.state;
+	if (tool !== "eval") return foldedLine(tool, state, getTheme());
 	// peek/stop/list control results copy the run's details (no details.action), so only args tell them apart.
 	const action = (state?.args as { action?: unknown } | undefined)?.action;
 	if (action !== undefined && action !== "run") return undefined;
 	return state?.result ? evalResultLine(state.result, state.args) : evalCallLine(state?.args);
+}
+
+/** The non-eval card's one-line fold, exactly as its collapsed card draws it; undefined keeps the card out. */
+function foldedLine(tool: string, state: CardSnapshot["state"], theme: Theme): MemberLine | undefined {
+	const plan = planFor(tool);
+	if (!plan) return undefined;
+	const result = state?.result as ToolResult;
+	const context: RenderContext = { args: state?.args as Record<string, unknown> | undefined, cwd: process.cwd(), isError: result?.isError === true };
+	const partial = state?.isPartial === true;
+	const fold = result
+		? plan.renderResult?.([result, { expanded: false, isPartial: partial }, theme, context])
+		: plan.renderCall?.([state?.args, theme, context]);
+	if (!fold || !("line" in fold)) return undefined;
+	const status = !result ? "call" : partial ? "running" : "complete";
+	return { language: "", status, what: "", tool, text: fold.line };
 }
 
 function createImpl(deps: ImplDeps): FullImpl {
@@ -419,7 +439,7 @@ function createImpl(deps: ImplDeps): FullImpl {
 			const revision = typeof card.getRenderRevision === "function" ? card.getRenderRevision() : undefined;
 			const cached = lineCache.get(card);
 			if (typeof revision === "number" && cached?.revision === revision) return cached.line;
-			const line = snapshotLine(card.presentationSnapshot);
+			const line = snapshotLine(card.presentationSnapshot, () => ui?.theme);
 			if (typeof revision === "number") lineCache.set(card, { revision, line });
 			return line;
 		} catch {

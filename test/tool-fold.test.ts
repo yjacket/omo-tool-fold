@@ -50,6 +50,7 @@ function makeHost(options: HostOptions = {}) {
 		web_search: { renderCall: record("ws.call"), renderResult: record("ws.result") },
 		memory: { renderCall: record("mem.call"), renderResult: record("mem.result"), renderShell: "self" },
 		get_goal: { renderCall: record("goal.call"), renderResult: record("goal.result") },
+		write: { renderCall: record("write.call"), renderResult: record("write.result") },
 		look_at: { renderCall: record("look.call") },
 		ask_user_question: { renderCall: record("ask.call"), renderResult: record("ask.result") },
 	};
@@ -361,10 +362,14 @@ type Card = { presentationSnapshot: unknown; render(width: number): string[] };
 type Grouped = { render(width: number): string[] };
 
 function evalCard(definition: unknown, label: string, result: unknown = okEval, args: unknown = {}): Card {
+	return toolCard("eval", definition, label, result, args);
+}
+
+function toolCard(toolName: string, definition: unknown, label: string, result: unknown, args: unknown): Card {
 	return {
 		presentationSnapshot: {
 			presentation: "classic",
-			identity: { toolName: "eval", toolDefinition: definition },
+			identity: { toolName, toolDefinition: definition },
 			state: { args, result, isPartial: false, expanded: false },
 		},
 		render: () => [`CARD ${label}`],
@@ -427,6 +432,45 @@ describe("tool-fold thinking labels and eval blocks", () => {
 		expect((out[0] as Grouped).render(80)).toEqual(["", "• Ran 2 evals", "  └ js ✓ 규칙 조사", "    js ✓ 규칙 조사"]);
 	});
 
+	test("folded eval, edit and write cards in a row project to one mixed block", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const cards = [
+			evalCard(session.getToolDefinition("eval"), "a"),
+			toolCard("edit", session.getToolDefinition("edit"), "e", { details: { diff: "+new" } }, { path: "a.ts" }),
+			toolCard("write", session.getToolDefinition("write"), "w", { details: {} }, { path: "b.ts" }),
+		];
+		const out = transcript(host, cards).project();
+		expect(out.length).toBe(1);
+		expect((out[0] as Grouped).render(80)).toEqual([
+			"",
+			"• Ran 3 tools · eval 1 · edit 1 · write 1",
+			"  └ eval js ✓ 규칙 조사",
+			"    edit a.ts (+1/-0)",
+			"    write b.ts",
+		]);
+	});
+
+	test("a failed edit breaks the run and keeps its own card", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const edit = session.getToolDefinition("edit");
+		const failed = toolCard("edit", edit, "err", { isError: true }, { path: "a.ts" });
+		const ok = (label: string) => toolCard("edit", edit, label, { details: { diff: "+x" } }, { path: `${label}.ts` });
+		const out = transcript(host, [ok("a"), failed, ok("b"), ok("c")]).project();
+		expect(out.length).toBe(3);
+		expect(out[1]).toBe(failed);
+		expect((out[2] as Grouped).render(80)[1]).toBe("• Ran 2 tools · edit 2");
+	});
+
+	test("an unfolded tool (read) between folded cards breaks the run", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const read = toolCard("read", session.getToolDefinition("read"), "r", { details: {} }, { path: "a.ts" });
+		const { im, project } = transcript(host, [evalCard(session.getToolDefinition("eval"), "a"), read, evalCard(session.getToolDefinition("eval"), "b")]);
+		expect(project()).toBe(im.chatContainer.children);
+	});
+
 	test("projecting the same children array twice returns the same output array", async () => {
 		const host = makeHost();
 		const { session } = await load(host);
@@ -474,14 +518,14 @@ describe("tool-fold thinking labels and eval blocks", () => {
 		transcript(host, []);
 		expect(created).toEqual({ created: true });
 		expect(notices.length).toBe(1);
-		expect(notices[0]).toContain("eval 묶음");
+		expect(notices[0]).toContain("도구 묶음");
 	});
 
 	test("a host without InteractiveMode notices eval grouping off and still hides thinking", async () => {
 		const host = makeHost({ withInteractive: false });
 		const { notices } = await load(host);
 		expect(notices.length).toBe(1);
-		expect(notices[0]).toContain("eval 묶음");
+		expect(notices[0]).toContain("도구 묶음");
 		const message = new host.AssistantMessageComponent();
 		message.reconcileRenderDescriptors([S, L]);
 		expect(message.received).toEqual([]);
@@ -520,7 +564,7 @@ describe("tool-fold thinking labels and eval blocks", () => {
 		expect(notices).toEqual([]);
 		await Promise.resolve();
 		expect(notices.length).toBe(1);
-		expect(notices[0]).toContain("eval 묶음");
+		expect(notices[0]).toContain("도구 묶음");
 	});
 
 	test("with the core fold off, marked eval cards are projected unchanged", async () => {

@@ -69,6 +69,20 @@ const syntheticSession = () => {
   for (const n of [1, 2, 3]) evalTurn(n);
   assistant([{ type: "text", text: "between" }], "stop");
   evalTurn(4);
+  // A folded edit right after eval 4 joins it in one mixed block.
+  assistant([{ type: "toolCall", id: "toolu_qa_edit", name: "edit", arguments: { path: join(REPO, "README.md"), edits: [{ oldText: "a", newText: "b" }] } }], "toolUse");
+  add({
+    type: "message",
+    message: {
+      role: "toolResult",
+      toolCallId: "toolu_qa_edit",
+      toolName: "edit",
+      content: [{ type: "text", text: "Successfully replaced 1 block(s) in README.md." }],
+      details: { diff: "--- a\n+++ b\n-old line\n+new line\n+more" },
+      isError: false,
+      timestamp: at(),
+    },
+  });
   assistant([thinking("qa thought final"), { type: "text", text: "QA 끝" }], "stop");
   const header = { type: "session", version: 3, id: "00000000-0000-7000-8000-000000000a01", timestamp: new Date(t0).toISOString(), cwd: REPO };
   return [header, ...entries].map((e) => JSON.stringify(e));
@@ -268,7 +282,7 @@ const profileDirs = profiles().filter((n) => !profilesBefore.includes(n)).map((n
 
 // (g) assertions
 const plain = Bun.stripANSI(stream.toString("utf8"));
-const header = /Ran \d+ evals/;
+const header = /Ran \d+ (?:evals|tools)/;
 const NEEDLES = ["TypeError", "tool-fold 꺼짐", "tool-fold 일부 꺼짐", "detachAll", "Failed to load extension", "[render error"];
 
 // Synthetic mode: the transcript is known, so assert exact viewport lines.
@@ -277,15 +291,18 @@ const collapsedChecks = (name, screen) => {
   const headers = ls.filter((l) => header.test(l));
   const at = ls.findIndex((l) => /Ran 3 evals/.test(l));
   return [
-    [`${name}: exactly one 'Ran N evals' line, and it is 'Ran 3 evals'`, headers.length === 1 && at !== -1],
+    [`${name}: two block headers, 'Ran 3 evals' and the mixed eval+edit block`, headers.length === 2 && at !== -1],
     [
       `${name}: block members are '└ js ✓ QA step 1', 'js ✓ QA step 2', 'js ✓ QA step 3'`,
       at !== -1 && ls[at + 1] === "└ js ✓ QA step 1" && ls[at + 2] === "js ✓ QA step 2" && ls[at + 3] === "js ✓ QA step 3",
     ],
-    [
-      `${name}: lone eval is one 'eval js ✓ QA step 4' line`,
-      ls.filter((l) => l.includes("QA step 4")).length === 1 && ls.some((l) => /^(?:• )?eval js ✓ QA step 4$/.test(l)),
-    ],
+    (() => {
+      const mixed = ls.findIndex((l) => l.includes("Ran 2 tools · eval 1 · edit 1"));
+      return [
+        `${name}: mixed block 'Ran 2 tools · eval 1 · edit 1' with '└ eval js ✓ QA step 4' and 'edit README.md (+2/-1)'`,
+        mixed !== -1 && ls[mixed + 1] === "└ eval js ✓ QA step 4" && ls[mixed + 2] === "edit README.md (+2/-1)",
+      ];
+    })(),
     [`${name}: no 'Thought:' line`, !ls.some((l) => l.includes("Thought:"))],
     [`${name}: 'QA 끝' present`, ls.some((l) => l.includes("QA 끝"))],
   ];
@@ -293,7 +310,9 @@ const collapsedChecks = (name, screen) => {
 const syntheticAssertions = () => [
   ...collapsedChecks("collapsed", screens.collapsed),
   ["expanded shows EVAL-FULL-OUTPUT at least 3 times", screens.expanded.split("EVAL-FULL-OUTPUT").length - 1 >= 3],
-  ["expanded keeps the 'Ran 3 evals' header", screens.expanded.includes("Ran 3 evals")],
+  // The expanded edit diff scrolls the first block's header out of the 45-row viewport; the mixed one stays.
+  ["expanded keeps the mixed block header", screens.expanded.includes("Ran 2 tools · eval 1 · edit 1")],
+  ["expanded shows the edit diff", screens.expanded.includes("+new line")],
   ...collapsedChecks("recollapsed", screens.recollapsed),
   ["recollapsed has no EVAL-FULL-OUTPUT", !screens.recollapsed.includes("EVAL-FULL-OUTPUT")],
   ...NEEDLES.map((n) => [`stream has no '${n}'`, !plain.includes(n)]),

@@ -26,7 +26,7 @@ The package requires Bun >= 1.4. Tests use `bun:test` mock.module fakes and impo
 - `createImpl` builds the implementation and `TruncatedText` components. The default extension dynamically imports and feature-detects `AgentSession` from `@code-yeongyu/senpi` and `TruncatedText` from `@earendil-works/pi-tui`.
 - `HOOK`, `IMPL`, `WRAPPED`, and `OWN` are `Symbol.for` coordination markers. The prototype hook installs once per process and dispatches through the replaceable global implementation; reload clears that implementation.
 - `extension/thinking-label.ts` exports `hideFinishedThinking`, a pure filter that drops finished hidden `thinking-label` descriptors and their spacers but keeps the live `Thinking...` label and shown thinking.
-- `extension/eval-run.ts` exports `groupEvalRuns`, a pure pass over the projected transcript that replaces runs of 2+ folded eval cards (with thinking-only details between them) by one group.
+- `extension/eval-run.ts` exports `groupEvalRuns`, a pure pass over the projected transcript that replaces runs of 2+ folded tool cards (eval, edit, apply_patch, write and the other compact tools; thinking-only details between them) by one group. Non-eval members carry their own fold line, computed by `foldedLine` in `tool-fold.ts` through the same plan the card uses.
 - `extension/eval-group-view.ts` exports `createEvalGroupClass`, the block component: header, body lines, expand state taken from member cards, mouse handling and render revision.
 - `tool-fold.ts` wires them. `Symbol.for("omo.tool-fold.thinking-hook.v1")` marks the wrap of `AssistantMessageComponent.prototype.reconcileRenderDescriptors`. `Symbol.for("omo.tool-fold.group-hook.v1")` marks the wrap of `InteractiveMode.prototype.createToolExecutionComponent`, which installs the projection hook `Symbol.for("omo.tool-fold.project-hook.v1")` on the transcript container's `project()`. All three dispatch through `IMPL`. Missing seams turn off only their part, with one load-time `tool-fold 일부 꺼짐 (...)` notice, plus at most one late notice if the transcript `project()` or the block rendering fails later.
 
@@ -36,7 +36,7 @@ The package requires Bun >= 1.4. Tests use `bun:test` mock.module fakes and impo
 - Never mutate stored tool results. Before calling an original renderer, remove this extension's component from `context.lastComponent`.
 - Feature-detect every Senpi/TUI internal. If an internal is missing, leave rendering original and show one session-start warning.
 - Keep the folding list an explicit allowlist. Leave `read`, `grep`, `find`, `ls`, and `ask_user_question` untouched; do not blindly fold future tools.
-- Group only eval. Never place an unfolded or failed eval in a block.
+- Group only cards this extension folds to a line (any plan except todo). Never place an unfolded, failed or partially failed card in a block. An eval-only block keeps the `Ran N evals` header; a mixed one reads `Ran N tools · <tool> <count> · ...`.
 - Never touch `chatContainer.children`. Grouping lives only in the projected array.
 - Keep trailing thinking-only messages outside the block, so the live `Thinking...` label stays visible.
 - Preserve the v2 symbols unless intentionally layering a new hook over copies already loaded in running processes.

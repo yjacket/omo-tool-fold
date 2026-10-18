@@ -1,12 +1,16 @@
 /**
- * Pure projection pass: fold consecutive eval cards into one group element.
+ * Pure projection pass: fold consecutive folded tool cards (eval, edit, write, ...) into one group element.
  *
  * Unlike Senpi's own grouping pass, trailing detail children stay OUTSIDE the group so a live
  * "Thinking..." label keeps rendering below the block. Cards and details between them become
  * the group's members, in original order.
  */
 
-export type MemberLine = { language: string; status: string; what: string };
+/**
+ * One body line. An eval keeps its own parts; any other folded tool (`tool` set, not "eval")
+ * carries its already-rendered one-line fold in `text`.
+ */
+export type MemberLine = { language: string; status: string; what: string; tool?: string; text?: string };
 
 export type RunDeps<G extends object> = {
 	memberLine(child: unknown): MemberLine | undefined;
