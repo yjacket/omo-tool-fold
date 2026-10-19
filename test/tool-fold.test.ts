@@ -376,6 +376,28 @@ function toolCard(toolName: string, definition: unknown, label: string, result: 
 	};
 }
 
+/** A fake CustomEntryComponent: the entry name plus the collapsed state Ctrl+O changes. */
+class FakeNotice {
+	_expanded: boolean;
+	constructor(
+		public entry: { type: "custom"; customType: string } | undefined,
+		expanded = false,
+		public message?: { role: "custom"; customType: string },
+	) {
+		this._expanded = expanded;
+	}
+	setExpanded(expanded: boolean) {
+		this._expanded = expanded;
+	}
+	render() {
+		return ["NOTICE"];
+	}
+}
+
+function customEntry(customType: string, expanded = false): FakeNotice {
+	return new FakeNotice({ type: "custom", customType }, expanded);
+}
+
 /** Creates an InteractiveMode whose transcript holds `cards`, and runs the real tool-card creation path once. */
 function transcript(host: ReturnType<typeof makeHost>, cards: unknown[]) {
 	const im = new host.InteractiveMode();
@@ -573,6 +595,66 @@ describe("tool-fold thinking labels and eval blocks", () => {
 		const marked = { ...session.getToolDefinition("eval") };
 		(marked as Record<PropertyKey, unknown>)[Symbol.for("omo.tool-fold.wrapped.v2")] = true;
 		const { im, project } = transcript(host, [evalCard(marked, "a"), evalCard(marked, "b")]);
+		expect(project()).toBe(im.chatContainer.children);
+	});
+});
+
+describe("collapsed notice hiding", () => {
+	test("a Kibitzer nudge is hidden while collapsed and shown unchanged on Ctrl+O", async () => {
+		const host = makeHost();
+		await load(host);
+		const nudge = customEntry("omo-kibitzer:nudged");
+		const { im, project } = transcript(host, [nudge]);
+		expect(project()).toEqual([]);
+		expect(im.chatContainer.children).toEqual([nudge]);
+		nudge.setExpanded(true);
+		expect(project()).toEqual([nudge]);
+		nudge.setExpanded(false);
+		expect(project()).toEqual([]);
+	});
+
+	test("goal cache-warm wait and wake notices are hidden", async () => {
+		const host = makeHost();
+		await load(host);
+		const wait = customEntry("goal-cache-warmup");
+		const wake = customEntry("goal-cache-warmup");
+		const { project } = transcript(host, [wait, wake]);
+		expect(project()).toEqual([]);
+	});
+
+	test("cache-miss and unrelated custom notices stay visible", async () => {
+		const host = makeHost();
+		await load(host);
+		const cacheMiss = { kind: "text", text: "Cache miss: 1234 tokens re-billed" };
+		const unrelatedEntry = customEntry("some-other-notice");
+		const unrelatedMessage = new FakeNotice(undefined, false, { role: "custom", customType: "omo-kibitzer:recall" });
+		const { im, project } = transcript(host, [cacheMiss, unrelatedEntry, unrelatedMessage]);
+		expect(project()).toBe(im.chatContainer.children);
+	});
+
+	test("a hidden notice between two folded evals does not break the block", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		const { project } = transcript(host, [evalCard(def, "a"), customEntry("omo-kibitzer:nudged"), evalCard(def, "b")]);
+		const out = project();
+		expect(out.length).toBe(1);
+		expect((out[0] as Grouped).render(80)).toEqual(["", "• Ran 2 evals", "  └ js ✓ 규칙 조사", "    js ✓ 규칙 조사"]);
+	});
+
+	test("missing or hostile notice fields leave the projection unchanged", async () => {
+		const host = makeHost();
+		await load(host);
+		const missingState = { entry: { type: "custom", customType: "omo-kibitzer:nudged" }, setExpanded() {} };
+		const missingEntry = { _expanded: false, setExpanded() {} };
+		const hostile = {
+			_expanded: false,
+			setExpanded() {},
+			get entry(): never {
+				throw new Error("shape changed");
+			},
+		};
+		const { im, project } = transcript(host, [missingState, missingEntry, hostile]);
 		expect(project()).toBe(im.chatContainer.children);
 	});
 });

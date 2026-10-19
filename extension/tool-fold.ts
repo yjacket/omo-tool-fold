@@ -9,6 +9,7 @@
 
 import { createEvalGroupClass } from "./eval-group-view";
 import { groupEvalRuns, type MemberLine } from "./eval-run";
+import { hideCollapsedNotices } from "./hidden-notices";
 import { hideFinishedThinking, type RenderDescriptor } from "./thinking-label";
 
 const HOOK = Symbol.for("omo.tool-fold.hook.v2");
@@ -487,15 +488,18 @@ function createImpl(deps: ImplDeps): FullImpl {
 			});
 		},
 		groupEvals(projected) {
-			// With the core fold off, a WRAPPED mark left by an older copy still matches cards this
-			// copy renders unfolded, so grouping must not run at all.
-			if (!TruncatedText) return projected;
 			if (!Array.isArray(projected)) return projected;
-			const known = projections.get(projected);
+			const visible = hideCollapsedNotices(projected);
+			// With the core fold off, a WRAPPED mark left by an older copy still matches cards this
+			// copy renders unfolded, so grouping must not run at all. Hiding notices still applies.
+			if (!TruncatedText) return visible;
+			// The raw array's cached projection is valid only while no notice was hidden: Ctrl+O
+			// changes the filtered array without changing the raw one.
+			const known = visible === projected ? projections.get(projected) : undefined;
 			if (known) return known;
 			const View = groupClass();
-			if (!View) return projected;
-			const grouped = groupEvalRuns<GroupView>(projected, {
+			if (!View) return visible;
+			const grouped = groupEvalRuns<GroupView>(visible, {
 				memberLine,
 				isDetail,
 				groupFor(firstCard) {
@@ -507,7 +511,7 @@ function createImpl(deps: ImplDeps): FullImpl {
 				},
 				setMembers: (group, members, lines, cards) => group.setMembers(members, lines, cards),
 			});
-			projections.set(projected, grouped);
+			if (visible === projected) projections.set(projected, grouped);
 			return grouped;
 		},
 		setUi(next) {

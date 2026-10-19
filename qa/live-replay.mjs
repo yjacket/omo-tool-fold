@@ -19,6 +19,9 @@ const INSTALLED_CLONE = "C:/Users/yjack/.omo/agent/git/github.com/yjacket/omo-to
 const EVIDENCE = join(REPO, ".omo/evidence/fold-thinking-eval-group");
 const COLS = 150;
 const ROWS = 45;
+// The expanded transcript of this synthetic session is taller than the documented 45-row viewport.
+// Capture it at 70 rows so the older eval assertions and the new notice assertions share one frame.
+const EXPANDED_ROWS = 70;
 
 const CLI = join(SENPI_DIST, "bundle/cli.js");
 if (!existsSync(CLI)) throw new Error(`senpi bundle CLI not found at ${CLI}; set SENPI_DIST`);
@@ -41,11 +44,13 @@ const syntheticSession = () => {
   const at = () => t0 + entries.length * 1000;
   const thinking = (text) => ({ type: "thinking", thinking: text, thinkingSignature: "qa", startedAt: at(), endedAt: at() + 1 });
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-  const assistant = (content, stopReason) =>
+  const assistant = (content, stopReason, usageOverride) =>
     add({
       type: "message",
-      message: { role: "assistant", content, api: "claude-sdk-oauth", provider: "anthropic-subscription", model: "claude-opus-5-5", usage, stopReason, timestamp: at() },
+      message: { role: "assistant", content, api: "claude-sdk-oauth", provider: "anthropic-subscription", model: "claude-opus-5-5", usage: usageOverride ?? usage, stopReason, timestamp: at() },
     });
+  const customEntry = (customType, data) => add({ type: "custom", customType, data });
+  const cacheUsage = (input, cacheRead) => ({ ...usage, input, cacheRead, cacheWrite: 0, totalTokens: input + cacheRead });
   const evalTurn = (n) => {
     const toolCallId = `toolu_qa_${n}`;
     const summary = `QA step ${n}`;
@@ -67,7 +72,9 @@ const syntheticSession = () => {
   add({ type: "thinking_level_change", thinkingLevel: "low" });
   add({ type: "message", message: { role: "user", content: [{ type: "text", text: "QA replay" }], timestamp: at() } });
   for (const n of [1, 2, 3]) evalTurn(n);
-  assistant([{ type: "text", text: "between" }], "stop");
+  // Cache-read turn. The later `QA 끝` turn re-bills the prompt, so the runtime derives a
+  // cache-miss notice there on resume (the notice itself is not persisted).
+  assistant([{ type: "text", text: "between" }], "stop", cacheUsage(0, 40000));
   evalTurn(4);
   // A folded edit right after eval 4 joins it in one mixed block.
   assistant([{ type: "toolCall", id: "toolu_qa_edit", name: "edit", arguments: { path: join(REPO, "README.md"), edits: [{ oldText: "a", newText: "b" }] } }], "toolUse");
@@ -83,7 +90,37 @@ const syntheticSession = () => {
       timestamp: at(),
     },
   });
-  assistant([thinking("qa thought final"), { type: "text", text: "QA 끝" }], "stop");
+  assistant([thinking("qa thought final"), { type: "text", text: "QA 끝" }], "stop", cacheUsage(40000, 0));
+  // Durable custom entries in the exact shapes the runtime appends. Both notice types render
+  // through CustomEntryComponent; the QA extension registers their renderers in this isolated run.
+  // Distinct goal ids keep both cache-warm cards: the runtime replaces a wake onto the same goal's
+  // preceding wait card, so one goal id would leave only the wake in the transcript.
+  customEntry("omo-kibitzer:nudged", {
+    version: 1,
+    nudges: [{ path: join(REPO, ".omo/memory/qa-nudge.md"), hint: "QA recall hint" }],
+    via: "prompt",
+  });
+  customEntry("goal-cache-warmup", {
+    phase: "scheduled",
+    goalId: "goal-qa-wait",
+    iteration: 1,
+    delayMs: 60000,
+    dueAtMs: t0 + 600000,
+    activeMonitorCount: 1,
+    wakeSources: "monitor",
+    cache: { cachedTokens: 40000, ttlSeconds: 300 },
+  });
+  customEntry("goal-cache-warmup", {
+    phase: "resumed",
+    goalId: "goal-qa-wake",
+    iteration: 1,
+    delayMs: 60000,
+    dueAtMs: t0 + 600000,
+    waitedMs: 60000,
+    wakeCause: "timer",
+    activeMonitorCount: 1,
+    wakeSources: "monitor",
+  });
   const header = { type: "session", version: 3, id: "00000000-0000-7000-8000-000000000a01", timestamp: new Date(t0).toISOString(), cwd: REPO };
   return [header, ...entries].map((e) => JSON.stringify(e));
 };
@@ -112,7 +149,7 @@ mkdirSync(join(AGENT, "themes"), { recursive: true });
 // disable it so the QA eval tool (with its EVAL-FULL-OUTPUT marker) owns the name.
 writeFileSync(
   join(AGENT, "settings.json"),
-  JSON.stringify({ theme: "grok-day-focus", hideThinkingBlock: true, packages: [], disabledBuiltinExtensions: ["codemode"] }),
+  JSON.stringify({ theme: "grok-day-focus", hideThinkingBlock: true, showCacheMissNotices: true, packages: [], disabledBuiltinExtensions: ["codemode"] }),
 );
 cpSync(join(REPO, "themes/grok-day-focus.json"), join(AGENT, "themes/grok-day-focus.json"));
 mkdirSync(SESSIONS, { recursive: true });
@@ -122,7 +159,36 @@ else cpSync(SESSION_SRC, SESSION);
 writeFileSync(
   join(ROOT, "qa-eval-tool.ts"),
   `import { Text } from "@earendil-works/pi-tui";
+import { noticeEntryRenderer } from ${JSON.stringify(join(SENPI_DIST, "core/extensions/notice/index.js"))};
+import { renderGoalCacheWarmupEntry } from ${JSON.stringify(join(SENPI_DIST, "core/extensions/builtin/goal/cache-warm-renderer.js"))};
+// --no-extensions hides the bundled goal extension, and the OMO plugin is not loaded in this
+// isolated run, so register the real runtime adapter/renderer here rather than a fake card.
+const kibitzerEntryRenderer = noticeEntryRenderer((entry) => {
+  const data = entry.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+  if (data.version !== 1 || !Array.isArray(data.nudges) || data.nudges.length === 0) return undefined;
+  const nudges = [];
+  for (const nudge of data.nudges) {
+    if (nudge === null || typeof nudge !== "object") return undefined;
+    if (typeof nudge.path !== "string" || typeof nudge.hint !== "string") return undefined;
+    nudges.push({ path: nudge.path, hint: nudge.hint });
+  }
+  const [first, ...rest] = nudges;
+  return {
+    glyph: "✦",
+    title: "Kibitzer !",
+    tone: "accent",
+    why: \`recalled memory: \${first.hint}\`,
+    extra: [
+      ...rest.map((nudge) => ({ text: \`recalled memory: \${nudge.hint}\`, tone: "dim" })),
+      ...nudges.map((nudge) => ({ text: nudge.path, tone: "dim" })),
+    ],
+    detail: "Kibitzer surfaced this from stored memory; it is a hint, not current state.",
+  };
+});
 export default function (pi) {
+  pi.registerEntryRenderer("omo-kibitzer:nudged", kibitzerEntryRenderer);
+  pi.registerEntryRenderer("goal-cache-warmup", renderGoalCacheWarmupEntry);
   pi.registerTool({
     name: "eval",
     label: "eval",
@@ -216,16 +282,31 @@ const killTree = async () => {
 };
 
 const captures = {};
+const captureRows = {};
 try {
   // ready = the editor border is drawn, then the history redraw settles
   const ready = await waitFor(0, /─{40,}/, 90000);
   captures.collapsed = await waitIdle(ready - 1, 2500, 60000);
-  for (const name of ["expanded", "recollapsed"]) {
-    const from = total;
-    keys.push({ key: "0x0f", atByte: from });
-    proc.terminal.write("\x0f");
-    captures[name] = await waitIdle(from, 1500, 20000);
-  }
+  captureRows.collapsed = ROWS;
+  // Expand, resettle at the taller viewport so every assertion target is in frame, then collapse.
+  let from = total;
+  keys.push({ key: "0x0f", atByte: from });
+  proc.terminal.write("\x0f");
+  await waitIdle(from, 1500, 20000);
+  from = total;
+  keys.push({ key: `resize ${COLS}x${EXPANDED_ROWS}`, atByte: from });
+  proc.terminal.resize(COLS, EXPANDED_ROWS);
+  captures.expanded = await waitIdle(from, 2500, 30000);
+  captureRows.expanded = EXPANDED_ROWS;
+  from = total;
+  keys.push({ key: `resize ${COLS}x${ROWS}`, atByte: from });
+  proc.terminal.resize(COLS, ROWS);
+  await waitIdle(from, 1500, 20000);
+  from = total;
+  keys.push({ key: "0x0f", atByte: from });
+  proc.terminal.write("\x0f");
+  captures.recollapsed = await waitIdle(from, 1500, 20000);
+  captureRows.recollapsed = ROWS;
 } finally {
   await killTree();
 }
@@ -248,15 +329,15 @@ writeFileSync(
   page,
   `<!doctype html><html><head><meta charset="utf-8"><style>${xcss}html,body{margin:0;background:#fff}</style>
 <script>${xjs.replace(/<\/script/g, "<\\/script")}</script></head><body><div id="t"></div><script>
-window.show = (b64) => new Promise((resolve) => {
+window.show = (b64, rows) => new Promise((resolve) => {
   document.getElementById("t").innerHTML = "";
-  const term = new Terminal({ cols: ${COLS}, rows: ${ROWS}, fontSize: 13, theme: { background: "#ffffff", foreground: "#1f2328", cursor: "#1f2328" }, fontFamily: "Consolas, monospace", allowProposedApi: true, scrollback: 100000 });
+  const term = new Terminal({ cols: ${COLS}, rows, fontSize: 13, theme: { background: "#ffffff", foreground: "#1f2328", cursor: "#1f2328" }, fontFamily: "Consolas, monospace", allowProposedApi: true, scrollback: 100000 });
   term.open(document.getElementById("t"));
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   term.write(bytes, () => requestAnimationFrame(() => {
     const buf = term.buffer.active;
     const lines = [];
-    for (let i = buf.viewportY; i < buf.viewportY + ${ROWS}; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? "");
+    for (let i = buf.viewportY; i < buf.viewportY + rows; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? "");
     resolve(lines.join("\\n"));
   }));
 });
@@ -271,7 +352,7 @@ try {
   await view.navigate(`file:///${page.replace(/\\/g, "/")}`);
   for (const [name, end] of Object.entries(captures)) {
     const b64 = stream.subarray(0, end).toString("base64");
-    screens[name] = await view.evaluate(`window.show(${JSON.stringify(b64)})`);
+    screens[name] = await view.evaluate(`window.show(${JSON.stringify(b64)}, ${captureRows[name]})`);
     writeFileSync(join(EVIDENCE, `live-${name}.txt`), screens[name]);
     await Bun.write(join(EVIDENCE, `live-${name}.png`), await view.screenshot());
   }
@@ -307,13 +388,25 @@ const collapsedChecks = (name, screen) => {
     [`${name}: 'QA 끝' present`, ls.some((l) => l.includes("QA 끝"))],
   ];
 };
+const cacheMissLine = /Cache miss: .*tokens re-billed/;
+const noticeChecks = (name, screen) => [
+  [`${name}: no 'Kibitzer' nudge text`, !screen.includes("Kibitzer")],
+  [`${name}: no 'Cache-warm' notice text`, !screen.includes("Cache-warm")],
+  [`${name}: cache-miss notice stays visible`, cacheMissLine.test(screen)],
+];
 const syntheticAssertions = () => [
   ...collapsedChecks("collapsed", screens.collapsed),
+  ...noticeChecks("collapsed", screens.collapsed),
+  ["expanded shows the Kibitzer nudge", screens.expanded.includes("Kibitzer !") && screens.expanded.includes("recalled memory: QA recall hint")],
+  ["expanded shows the cache-warm wait", screens.expanded.includes("Cache-warm wait")],
+  ["expanded shows the cache-warm wake", screens.expanded.includes("Cache-warm wake")],
+  ["expanded keeps the cache-miss notice", cacheMissLine.test(screens.expanded)],
   ["expanded shows EVAL-FULL-OUTPUT at least 3 times", screens.expanded.split("EVAL-FULL-OUTPUT").length - 1 >= 3],
   // The expanded edit diff scrolls the first block's header out of the 45-row viewport; the mixed one stays.
   ["expanded keeps the mixed block header", screens.expanded.includes("Ran 2 tools · eval 1 · edit 1")],
   ["expanded shows the edit diff", screens.expanded.includes("+new line")],
   ...collapsedChecks("recollapsed", screens.recollapsed),
+  ...noticeChecks("recollapsed", screens.recollapsed),
   ["recollapsed has no EVAL-FULL-OUTPUT", !screens.recollapsed.includes("EVAL-FULL-OUTPUT")],
   ...NEEDLES.map((n) => [`stream has no '${n}'`, !plain.includes(n)]),
 ];

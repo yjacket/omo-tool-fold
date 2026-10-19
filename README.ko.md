@@ -90,6 +90,15 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 - 아직 실행 중인 eval이 있으면 머리 줄에 스피너가 돌고 `Running N evals`(섞인 묶음은 `Running N tools · ...`)로 바뀝니다. 그 eval 줄에는 `py running 데이터 분석`처럼 상태 단어가 나옵니다.
 - 줄 수 제한은 없습니다.
 
+## 숨기는 알림
+
+도구 출력이 접힌 상태에서는 다음 두 대화 기록 알림을 아예 숨깁니다.
+
+- Kibitzer 회상 넛지(`✦ Kibitzer !` / `✦ <무작위 도입 문구> — <메모리 경로>`).
+- goal 캐시 워밍 알림(`⚡ Cache-warm wait …` / `⚡ Cache-warm wake …`).
+
+Ctrl+O를 누르면 원래 모습 그대로 다시 보입니다. 프롬프트 캐시 MISS 알림과 그 밖의 알림은 계속 보입니다. 숨김은 화면에 그릴 목록만 바꾸며, 저장된 항목과 `chatContainer.children`은 그대로 둡니다.
+
 ## 테마
 
 `grok-day-focus`는 senpi 내장 `grok-day` 테마를 복사해서 값 네 개만 바꾼 것입니다.
@@ -110,7 +119,7 @@ senpi에는 다른 확장이 만든 도구의 그리기 방식을 바꾸는 공�
 새 기능은 접점 두 곳을 더 씁니다. 각각 따로 존재 여부를 확인합니다.
 
 - `AssistantMessageComponent.prototype.reconcileRenderDescriptors`: 끝난 사고 줄을 숨깁니다.
-- `InteractiveMode.prototype.createToolExecutionComponent`: 이걸 거쳐 대화 기록 컨테이너의 `project()`에 닿고, 거기서 eval을 묶습니다. 묶음은 화면에 그릴 목록만 바꿉니다. `chatContainer.children`과 저장된 결과는 건드리지 않습니다.
+- `InteractiveMode.prototype.createToolExecutionComponent`: 이걸 거쳐 대화 기록 컨테이너의 `project()`에 닿고, 거기서 숨길 알림을 거른 뒤 eval을 묶습니다. 둘 다 화면에 그릴 목록만 바꿉니다. `chatContainer.children`과 저장된 결과는 건드리지 않습니다.
 
 안전장치:
 

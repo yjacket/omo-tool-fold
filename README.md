@@ -90,6 +90,15 @@ Any error result (`result.isError` or the render context's `isError`) shows the 
 - While any member is still running, the header shows a spinner and reads `Running N evals` (or `Running N tools · ...`). That member's line shows its state word, for example `py running 데이터 분석`.
 - The list has no line cap.
 
+## Hidden notices
+
+While tool output is collapsed, two transcript notices are hidden entirely:
+
+- Kibitzer recall nudges (`✦ Kibitzer !` / `✦ <random opener> — <memory path>`).
+- Goal cache-warm notices (`⚡ Cache-warm wait …` / `⚡ Cache-warm wake …`).
+
+Ctrl+O shows them again unchanged. Prompt-cache MISS notices and every other notice stay visible. Hiding changes only the drawn projection; stored entries and `chatContainer.children` keep everything.
+
 ## Theme
 
 `grok-day-focus` is a copy of senpi's built-in `grok-day` with four values changed:
@@ -110,7 +119,7 @@ Senpi has no public API for changing how another extension's tool is drawn. So t
 Two more seams drive the newer features. Each one is feature-detected on its own:
 
 - `AssistantMessageComponent.prototype.reconcileRenderDescriptors` hides finished thinking lines.
-- `InteractiveMode.prototype.createToolExecutionComponent` reaches the transcript container's `project()`, which groups evals. Grouping changes only the drawn projection. It never touches `chatContainer.children` or stored results.
+- `InteractiveMode.prototype.createToolExecutionComponent` reaches the transcript container's `project()`, which filters hidden notices and groups evals. Both change only the drawn projection. They never touch `chatContainer.children` or stored results.
 
 Fail-safe behavior:
 
