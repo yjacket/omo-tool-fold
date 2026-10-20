@@ -306,5 +306,5 @@ test("R11 a throwing theme falls back to member cards with one notice", async ()
 	expect(hasLine(plain, "eval js ✓ B 확인")).toBe(true);
 	expect(count(plain, "Ran ")).toBe(0);
 	expect(count(plain, "[render error")).toBe(0);
-	expect(h.notices.filter((notice) => notice.includes("eval 묶음")).length).toBe(1);
+	expect(h.notices.filter((notice) => notice.includes("도구 묶음")).length).toBe(1);
 });
