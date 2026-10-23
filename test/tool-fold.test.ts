@@ -33,7 +33,7 @@ const defaultTui = {
 
 type Call = { slot: string; args: unknown[] };
 
-type HostOptions = { withMethod?: boolean; withAssistant?: boolean; withInteractive?: boolean; withProject?: boolean };
+type HostOptions = { withMethod?: boolean; withAssistant?: boolean; withInteractive?: boolean; withProject?: boolean; withExpansion?: boolean };
 
 function makeHost(options: HostOptions = {}) {
 	const calls: Call[] = [];
@@ -72,6 +72,14 @@ function makeHost(options: HostOptions = {}) {
 	}
 	class FakeTranscript {
 		children: unknown[] = [];
+		display = {
+			children: [] as unknown[],
+			historyStart: 8,
+			detachAll() {
+				this.children = [];
+				this.historyStart = 0;
+			},
+		};
 		project() {
 			return this.children;
 		}
@@ -80,10 +88,18 @@ function makeHost(options: HostOptions = {}) {
 		children: unknown[] = [];
 	}
 	class InteractiveMode {
+		toolOutputExpanded = false;
 		chatContainer = options.withProject === false ? new NoProjectTranscript() : new FakeTranscript();
+		setToolsExpanded(expanded: boolean) {
+			this.toolOutputExpanded = expanded;
+			return "native toggle";
+		}
 		createToolExecutionComponent() {
 			return { created: true };
 		}
+	}
+	if (options.withExpansion === false) {
+		Object.defineProperty(InteractiveMode.prototype, "setToolsExpanded", { value: undefined });
 	}
 	return {
 		AgentSession,
@@ -597,6 +613,68 @@ describe("tool-fold thinking labels and eval blocks", () => {
 		const { im, project } = transcript(host, [evalCard(marked, "a"), evalCard(marked, "b")]);
 		expect(project()).toBe(im.chatContainer.children);
 	});
+});
+
+describe("tool-fold history window", () => {
+	test("expansion resets only the non-owning display and preserves native return and source children", async () => {
+		const host = makeHost();
+		await load(host);
+		const im = new host.InteractiveMode();
+		const chat = im.chatContainer as InstanceType<typeof host.FakeTranscript>;
+		const card = { render: () => ["original"], dispose: () => { throw new Error("must not dispose"); } };
+		chat.children.push(card);
+		chat.display.children.push(card);
+		expect(im.setToolsExpanded(true)).toBe("native toggle");
+		expect(chat.children).toEqual([card]);
+		expect(chat.display.historyStart).toBe(0);
+		expect(chat.display.children).toEqual([]);
+		chat.display.historyStart = 5;
+		im.setToolsExpanded(true);
+		expect(chat.display.historyStart).toBe(5);
+		im.setToolsExpanded(false);
+		expect(chat.display.historyStart).toBe(0);
+	});
+
+	test("reload disables display reset and a fresh load reuses the same hook", async () => {
+		const host = makeHost();
+		const { fire } = await load(host);
+		const wrapper = host.InteractiveMode.prototype.setToolsExpanded;
+		const im = new host.InteractiveMode();
+		const chat = im.chatContainer as InstanceType<typeof host.FakeTranscript>;
+		fire("session_shutdown", { reason: "reload" });
+		im.setToolsExpanded(true);
+		expect(chat.display.historyStart).toBe(8);
+		await load(host);
+		expect(host.InteractiveMode.prototype.setToolsExpanded).toBe(wrapper);
+		im.setToolsExpanded(false);
+		expect(chat.display.historyStart).toBe(0);
+	});
+
+	test("a missing expansion method warns without disabling ordinary folding", async () => {
+		const host = makeHost({ withExpansion: false });
+		const { notices, session } = await load(host);
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain("setToolsExpanded");
+		const folded = session.getToolDefinition("eval").renderResult(okEval, {}, undefined, {});
+		expect(folded).toBeInstanceOf(FakeTruncatedText);
+	});
+
+	for (const failure of ["missing", "throwing", "owning"]) {
+		test(`${failure} display seam preserves the native toggle and warns once`, async () => {
+			const host = makeHost();
+			const { notices } = await load(host);
+			const im = new host.InteractiveMode();
+			const chat = im.chatContainer as InstanceType<typeof host.FakeTranscript>;
+			const source = chat.children;
+			if (failure === "missing") Object.defineProperty(chat, "display", { value: {} });
+			if (failure === "throwing") chat.display.detachAll = () => { throw new Error("changed seam"); };
+			if (failure === "owning") Object.defineProperty(chat, "display", { value: chat });
+			expect(im.setToolsExpanded(true)).toBe("native toggle");
+			expect(im.setToolsExpanded(false)).toBe("native toggle");
+			expect(chat.children).toBe(source);
+			expect(notices).toHaveLength(1);
+		});
+	}
 });
 
 describe("collapsed notice hiding", () => {

@@ -116,10 +116,11 @@ Ctrl+O shows them again unchanged. Prompt-cache MISS notices and every other not
 
 Senpi has no public API for changing how another extension's tool is drawn. So this extension wraps `AgentSession.prototype.getToolDefinition`, the lookup the TUI uses to find tool renderers, imported from `@code-yeongyu/senpi`. It draws its one line with `TruncatedText` from `@earendil-works/pi-tui`. Both are internals, imported dynamically and feature-detected.
 
-Two more seams drive the newer features. Each one is feature-detected on its own:
+Additional seams drive the newer features. Each one is feature-detected on its own:
 
 - `AssistantMessageComponent.prototype.reconcileRenderDescriptors` hides finished thinking lines.
 - `InteractiveMode.prototype.createToolExecutionComponent` reaches the transcript container's `project()`, which filters hidden notices and groups evals. Both change only the drawn projection. They never touch `chatContainer.children` or stored results.
+- `InteractiveMode.prototype.setToolsExpanded` resets the non-owning display's history window after Ctrl+O. Long expanded output must not leave compact summaries outside the visible range when folded again. This applies equally to Claude and Codex; source cards and stored messages stay intact.
 
 Fail-safe behavior:
 

@@ -4,7 +4,7 @@
 // these internals, the extension turns itself off instead of breaking the TUI.
 // The prototype hook is installed once per process and always dispatches to the most recently
 // loaded copy of this file, so editing it and reloading takes effect without restarting omo.
-// Two more seams hide finished thinking labels and group consecutive folded evals; each is
+// Additional seams hide finished thinking labels, group folded evals and reset expansion history; each is
 // feature-detected on its own and dispatches through the same replaceable implementation.
 
 import { createEvalGroupClass } from "./eval-group-view";
@@ -19,6 +19,7 @@ const OWN = Symbol.for("omo.tool-fold.component");
 const THINKING_HOOK = Symbol.for("omo.tool-fold.thinking-hook.v1");
 const GROUP_HOOK = Symbol.for("omo.tool-fold.group-hook.v1");
 const PROJECT_HOOK = Symbol.for("omo.tool-fold.project-hook.v1");
+const EXPANSION_HOOK = Symbol.for("omo.tool-fold.expansion-hook.v1");
 const GROUP_PART = "도구 묶음";
 const LIVE_EVAL_STATES = new Set(["pending", "queued", "running", "detached"]);
 const COMPACT_TOOLS = new Set([
@@ -102,6 +103,7 @@ type Impl = {
 	// Optional: a copy of an older version (or a test double) may provide only the core members.
 	thinking?(descriptors: unknown, owner: unknown): unknown;
 	groupEvals?(projected: unknown): unknown;
+	resetHistory?(owner: unknown): void;
 	setUi?(ui: Ui | undefined): void;
 	warn?(part: string, reason: string): void;
 };
@@ -518,6 +520,21 @@ function createImpl(deps: ImplDeps): FullImpl {
 			ui = next;
 			if (pendingWarning !== undefined) notifyOnce(pendingWarning);
 		},
+		resetHistory(owner) {
+			try {
+				const chat = (owner as { chatContainer?: { display?: unknown } } | undefined)?.chatContainer;
+				const display = chat?.display as { detachAll?: () => void } | undefined;
+				if (!display || display === chat || typeof display.detachAll !== "function") {
+					warn("기록 표시", "transcript display.detachAll() not found");
+					return;
+				}
+				// The projection is non-owning. Detach resets history/hydration without disposing
+				// cards; ExplorationTranscriptContainer.render assigns the fresh projection again.
+				display.detachAll();
+			} catch {
+				warn("기록 표시", "transcript display reset failed");
+			}
+		},
 		warn,
 	};
 }
@@ -596,6 +613,29 @@ function installGroupHook(senpi: Record<string, unknown>, tui: Record<string, un
 	return undefined;
 }
 
+/** Expansion changes both row heights and projection indices; the kept history window is stale. */
+function installExpansionHook(senpi: Record<string, unknown>): string | undefined {
+	const proto = prototypeOf(senpi.InteractiveMode);
+	const original = proto?.setToolsExpanded;
+	if (!proto || typeof original !== "function") return "기록 표시: InteractiveMode.setToolsExpanded not found";
+	if (proto[EXPANSION_HOOK]) return undefined;
+	proto.setToolsExpanded = function (this: unknown, ...args: unknown[]) {
+		const before = (this as { toolOutputExpanded?: unknown } | undefined)?.toolOutputExpanded;
+		const result = original.apply(this, args);
+		try {
+			const after = (this as { toolOutputExpanded?: unknown } | undefined)?.toolOutputExpanded;
+			if (typeof before === "boolean" && typeof after === "boolean" && before !== after) {
+				currentImpl()?.resetHistory?.(this);
+			}
+		} catch {
+			// A changed internal or failing notifier must not break the native toggle.
+		}
+		return result;
+	};
+	proto[EXPANSION_HOOK] = true;
+	return undefined;
+}
+
 type ExtensionApi = {
 	on?: (
 		event: string,
@@ -636,7 +676,7 @@ export default async function toolFold(pi: ExtensionApi): Promise<void> {
 				proto[HOOK] = true;
 			}
 		}
-		for (const part of [installThinkingHook(senpi), installGroupHook(senpi, tui)]) if (part) parts.push(part);
+		for (const part of [installThinkingHook(senpi), installGroupHook(senpi, tui), installExpansionHook(senpi)]) if (part) parts.push(part);
 	} catch (error) {
 		problem = error instanceof Error ? error.message : String(error);
 		impl = undefined;

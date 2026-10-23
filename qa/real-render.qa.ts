@@ -22,11 +22,12 @@ function distRoot(envName: string, fallback: string): string {
 
 const SENPI = distRoot("SENPI_DIST", "C:/Users/yjack/.bun/install/global/node_modules/@code-yeongyu/senpi/dist");
 const PI_TUI = distRoot("PI_TUI_DIST", "C:/Users/yjack/.bun/install/global/node_modules/@earendil-works/pi-tui/dist");
-const EVIDENCE = join(import.meta.dir, "..", ".omo", "evidence", "fold-thinking-eval-group");
+const EVIDENCE = process.env.EVIDENCE_DIR ?? join(import.meta.dir, "..", ".omo", "evidence", "fold-thinking-eval-group");
 
 const senpi: Mod = await import(`${SENPI}/index.js`);
 const tui: Mod = await import(`${PI_TUI}/index.js`);
 const { ExplorationTranscriptContainer } = await import(`${SENPI}/modes/interactive/components/exploration-transcript-container.js`);
+const { CustomEntryComponent } = await import(`${SENPI}/modes/interactive/components/custom-entry.js`);
 const themeModule: Mod = await import(`${SENPI}/modes/interactive/theme/theme.js`);
 senpi.initTheme("light");
 // interactive-mode.js exposes ctx.ui.theme as this live proxy.
@@ -37,7 +38,9 @@ const defs: Record<string, unknown> = {
 		renderCall(args: { summary?: string }) {
 			return new tui.Text(`EVAL-CALL ${args.summary}`, 0, 0);
 		},
-		renderResult(result: { details?: { cells?: { status?: string }[] } }) {
+		renderResult(result: { content?: { type: string; text?: string }[]; details?: { cells?: { status?: string }[] } }) {
+			const text = result.content?.find((part) => part.type === "text")?.text;
+			if (text) return new tui.Text(text, 0, 0);
 			return new tui.Text(`EVAL-FULL-OUTPUT ${JSON.stringify(result.details?.cells?.[0]?.status)}`, 0, 0);
 		},
 	},
@@ -86,6 +89,9 @@ async function harness(caseName: string, themeThrows = false): Promise<Harness> 
 		ui: { requestRender() {} },
 		sessionManager: { getCwd: () => "C:/repo" },
 		chrome: undefined,
+		loadedResourcesContainer: new tui.Container(),
+		toolOutputExpanded: false,
+		showStatus() {},
 	};
 	for (const [key, value] of Object.entries(fields)) {
 		Object.defineProperty(im, key, { value, writable: true, configurable: true, enumerable: true });
@@ -308,3 +314,62 @@ test("R11 a throwing theme falls back to member cards with one notice", async ()
 	expect(count(plain, "[render error")).toBe(0);
 	expect(h.notices.filter((notice) => notice.includes("도구 묶음")).length).toBe(1);
 });
+
+for (const provider of ["claude", "codex"]) {
+	test(`long ${provider} history restores every compact card after Ctrl+O twice`, async () => {
+		const h = await harness(`history-${provider}`);
+		const savedHistory = process.env.PI_TUI_HISTORY_LINES;
+		process.env.PI_TUI_HISTORY_LINES = "100";
+		tui.resetMainScreenHistoryLines();
+		const terminal = { columns: 150, rows: 45, write() {}, hideCursor() {}, showCursor() {} };
+		const screen = new tui.TuiMainScreen(terminal);
+		screen.addChild(h.im.chatContainer);
+		const frame = () => {
+			screen.doRender();
+			const ansi: string[] = screen.previousLines;
+			return { ansi, plain: ansi.map((line) => Bun.stripANSI(line).trimEnd()) };
+		};
+		try {
+			for (let n = 0; n < 8; n++) {
+				const summary = `HISTORY-${provider}-${n}`;
+				const card = evalCard(h, summary);
+				card.updateResult({
+					content: [{ type: "text", text: Array.from({ length: 150 }, (_, row) => `FULL-${n}-${row}`).join("\n") }],
+					details: { cells: [{ status: "complete", language: "js", summary }] },
+				});
+				// Nonempty Claude reasoning and empty Codex reasoning both retain the same tool cards.
+				add(h, assistant([{ ...thinking, thinking: provider === "codex" ? "" : "reasoning" }]), card);
+				if (n % 2 === 0) {
+					add(h, new CustomEntryComponent(
+						{ type: "custom", customType: "omo-kibitzer:nudged", data: {} },
+						() => new tui.Text("QA-HIDDEN-NOTICE", 0, 0),
+					));
+				}
+				if (n % 2 === 1) add(h, assistant([{ type: "text", text: `BREAK-${n}` }]));
+			}
+			const error = evalCard(h, "error", { isError: true });
+			error.updateResult({ isError: true, content: [{ type: "text", text: "QA-ERROR-MUST-STAY" }] });
+			add(h, error, assistant([{ type: "text", text: "QA-LATEST-RESPONSE" }]));
+			const source = [...h.im.chatContainer.children];
+			const collapsed = frame();
+			evidence(`${provider}-history-before`, collapsed);
+			h.im.toggleToolOutputExpansion();
+			const expanded = frame();
+			evidence(`${provider}-history-expanded`, expanded);
+			expect(expanded.plain.some((line) => line.includes("FULL-7-149"))).toBe(true);
+			h.im.toggleToolOutputExpansion();
+			const recollapsed = frame();
+			evidence(`${provider}-history-after`, recollapsed);
+			console.log(`${provider} history rows ${collapsed.plain.length} -> ${expanded.plain.length} -> ${recollapsed.plain.length}`);
+			expect(recollapsed.plain).toEqual(collapsed.plain);
+			expect(recollapsed.plain.some((line) => line.includes("QA-ERROR-MUST-STAY"))).toBe(true);
+			expect(h.im.chatContainer.children).toEqual(source);
+			expect(h.notices).toEqual([]);
+		} finally {
+			h.im.chatContainer.dispose();
+			if (savedHistory === undefined) delete process.env.PI_TUI_HISTORY_LINES;
+			else process.env.PI_TUI_HISTORY_LINES = savedHistory;
+			tui.resetMainScreenHistoryLines();
+		}
+	});
+}

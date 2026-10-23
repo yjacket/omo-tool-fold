@@ -116,10 +116,11 @@ Ctrl+O를 누르면 원래 모습 그대로 다시 보입니다. 프롬프트 �
 
 senpi에는 다른 확장이 만든 도구의 그리기 방식을 바꾸는 공개 API가 없습니다. 그래서 이 확장은 `@code-yeongyu/senpi`에서 가져온 `AgentSession.prototype.getToolDefinition`(TUI가 도구 렌더러를 찾을 때 쓰는 조회 함수)을 감쌉니다. 한 줄은 `@earendil-works/pi-tui`의 `TruncatedText`로 그립니다. 둘 다 내부 구현이며, 동적으로 import하고 존재 여부를 확인한 뒤 씁니다.
 
-새 기능은 접점 두 곳을 더 씁니다. 각각 따로 존재 여부를 확인합니다.
+새 기능은 다음 접점을 더 씁니다. 각각 따로 존재 여부를 확인합니다.
 
 - `AssistantMessageComponent.prototype.reconcileRenderDescriptors`: 끝난 사고 줄을 숨깁니다.
 - `InteractiveMode.prototype.createToolExecutionComponent`: 이걸 거쳐 대화 기록 컨테이너의 `project()`에 닿고, 거기서 숨길 알림을 거른 뒤 eval을 묶습니다. 둘 다 화면에 그릴 목록만 바꿉니다. `chatContainer.children`과 저장된 결과는 건드리지 않습니다.
+- `InteractiveMode.prototype.setToolsExpanded`: Ctrl+O 전환 뒤 표시용 컨테이너의 기록 범위를 초기화합니다. 긴 출력을 펼쳤다가 접어도 요약 줄이 표시 범위 밖으로 밀려 사라지지 않습니다. Claude와 Codex에 똑같이 적용되며 원본 카드와 저장된 메시지는 그대로 둡니다.
 
 안전장치:
 
