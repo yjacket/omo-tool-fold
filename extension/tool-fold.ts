@@ -124,10 +124,19 @@ function title(theme: Theme, name: string): string {
 	return paint(theme, "toolTitle", strong);
 }
 
+function terminalSafe(value: string): string {
+	return value
+		.replace(/\u001b\][\s\S]*?(?:\u0007|\u001b\\|$)/g, "")
+		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\u001b[@-_]/g, "")
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
+
 function firstLine(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	for (const raw of value.split("\n")) {
-		const text = raw.trim();
+		const text = terminalSafe(raw).trim();
 		if (text) return text;
 	}
 	return undefined;
@@ -138,11 +147,12 @@ function isExpanded(options: RenderOptions, context: RenderContext | undefined):
 }
 
 function shortPath(path: string, cwd: unknown): string {
-	if (typeof cwd !== "string" || cwd.length === 0) return path;
+	if (typeof cwd !== "string" || cwd.length === 0) return terminalSafe(path);
 	const normalize = (value: string) => value.replaceAll("\\", "/").replace(/\/+$/, "");
 	const base = normalize(cwd);
 	const target = normalize(path);
-	return target.toLowerCase().startsWith(`${base.toLowerCase()}/`) ? target.slice(base.length + 1) : path;
+	const short = target.toLowerCase().startsWith(`${base.toLowerCase()}/`) ? target.slice(base.length + 1) : path;
+	return terminalSafe(short);
 }
 
 function editPath(args: unknown): string | undefined {
@@ -163,10 +173,15 @@ function diffCounts(diff: unknown): { added: number; removed: number } | undefin
 	return { added, removed };
 }
 
+function evalActionEligible(args: unknown): boolean {
+	const action = (args as { action?: unknown } | undefined)?.action;
+	return action === undefined || action === "run";
+}
+
 /** The eval card's folded facts once a result exists; undefined means the original card is shown. */
 function evalResultLine(result: unknown, args: unknown): MemberLine | undefined {
 	const res = result as ToolResult;
-	if (res?.isError) return undefined;
+	if (res?.isError || !evalActionEligible(args)) return undefined;
 	const details = res?.details;
 	if (!details || "action" in details || details.isError) return undefined;
 	const cells = Array.isArray(details.cells) ? (details.cells as Record<string, unknown>[]) : [];
@@ -182,7 +197,7 @@ function evalResultLine(result: unknown, args: unknown): MemberLine | undefined 
 /** The eval card's folded facts before a result exists. */
 function evalCallLine(args: unknown): MemberLine | undefined {
 	const request = args as Record<string, unknown> | undefined;
-	if (request?.action !== undefined && request.action !== "run") return undefined;
+	if (!evalActionEligible(request)) return undefined;
 	const what = firstLine(request?.summary) ?? firstLine(request?.code);
 	if (!what) return undefined;
 	return { language: String(request?.language ?? ""), status: "call", what };
@@ -193,7 +208,7 @@ const evalPlan: ToolPlan = {
 		const request = args as Record<string, unknown> | undefined;
 		const ctx = context as RenderContext | undefined;
 		if (ctx?.expanded || ctx?.isError) return undefined;
-		if (request?.action !== undefined && request.action !== "run") return undefined;
+		if (!evalActionEligible(request)) return undefined;
 		if (ctx?.hasResult) return { empty: true };
 		const line = evalCallLine(request);
 		if (!line) return undefined;
@@ -222,7 +237,7 @@ const editPlan: ToolPlan = {
 	renderResult([result, options, theme, context]) {
 		const res = result as ToolResult;
 		const ctx = context as RenderContext | undefined;
-		if (isExpanded(options as RenderOptions, ctx) || res?.isError || ctx?.isError) return undefined;
+		if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
 		const path = editPath(ctx?.args);
 		if (!path) return undefined;
 		const counts = diffCounts(res?.details?.diff);
@@ -247,7 +262,7 @@ const patchPlan: ToolPlan = {
 		const res = result as ToolResult;
 		const ctx = context as RenderContext | undefined;
 		const opts = options as RenderOptions;
-		if (isExpanded(opts, ctx) || res?.isError || ctx?.isError) return undefined;
+		if (isExpanded(opts, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
 		const details = res?.details;
 		const patchResult = details?.result as { failures?: unknown[] } | undefined;
 		if (patchResult?.failures?.length) return undefined;
@@ -265,7 +280,7 @@ const todoPlan: ToolPlan = {
 	renderResult([result, options, , context]) {
 		const res = result as ToolResult;
 		const ctx = context as RenderContext | undefined;
-		if (isExpanded(options as RenderOptions, ctx) || res?.isError || ctx?.isError) return undefined;
+		if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
 		return { empty: true };
 	},
 };
@@ -303,7 +318,7 @@ function compactPlan(name: string): ToolPlan {
 			const res = result as ToolResult;
 			const ctx = context as RenderContext | undefined;
 			const opts = options as RenderOptions;
-			if (isExpanded(opts, ctx) || res?.isError || ctx?.isError) return undefined;
+			if (isExpanded(opts, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
 			return { line: compactLine(name, ctx?.args, theme as Theme, ctx?.cwd, opts?.isPartial === true) };
 		},
 	};
@@ -367,7 +382,7 @@ type GroupView = { setMembers(members: readonly unknown[], lines: readonly Membe
 type GroupBase = new () => { children: unknown[]; render(width: number): string[] };
 type CardSnapshot = {
 	presentation?: unknown;
-	identity?: { toolName?: unknown; toolDefinition?: Record<PropertyKey, unknown> };
+	identity?: { toolName?: unknown; toolDefinition?: Record<PropertyKey, unknown>; cwd?: unknown };
 	state?: { args?: unknown; result?: unknown; isPartial?: unknown };
 };
 type ImplDeps = {
@@ -386,24 +401,48 @@ function partialNotice(parts: string): string {
  * A card joins a block only when its collapsed render is this extension's one-liner: eval keeps
  * its own parts, every other folded tool (edit, apply_patch, write, ...) contributes its fold line.
  */
+function resultFailed(result: unknown): boolean {
+	const res = result as ToolResult;
+	return !!res && typeof res === "object" && (!!res.isError || res.details?.isError === true);
+}
+
+/** Missing content stays compatible; present content must be an array made only of text blocks. */
+function textOnlyContent(result: unknown): boolean {
+	if (!result || typeof result !== "object" || !("content" in result)) return true;
+	const content = (result as { content?: unknown }).content;
+	if (content === undefined) return true;
+	if (!Array.isArray(content)) return false;
+	return content.every((block) => {
+		if (!block || typeof block !== "object") return false;
+		const part = block as { type?: unknown; text?: unknown };
+		return part.type === "text" && typeof part.text === "string";
+	});
+}
+
 function snapshotLine(snapshot: CardSnapshot | undefined, getTheme: () => Theme): MemberLine | undefined {
 	if (snapshot?.presentation !== "classic") return undefined;
 	const tool = snapshot.identity?.toolName;
 	if (typeof tool !== "string" || snapshot.identity?.toolDefinition?.[WRAPPED] !== true) return undefined;
 	const state = snapshot.state;
-	if (tool !== "eval") return foldedLine(tool, state, getTheme());
+	if (state?.result) {
+		if (resultFailed(state.result) || !textOnlyContent(state.result)) return undefined;
+	}
+	if (tool !== "eval") return foldedLine(tool, state, getTheme(), snapshot.identity?.cwd);
 	// peek/stop/list control results copy the run's details (no details.action), so only args tell them apart.
-	const action = (state?.args as { action?: unknown } | undefined)?.action;
-	if (action !== undefined && action !== "run") return undefined;
+	if (!evalActionEligible(state?.args)) return undefined;
 	return state?.result ? evalResultLine(state.result, state.args) : evalCallLine(state?.args);
 }
 
 /** The non-eval card's one-line fold, exactly as its collapsed card draws it; undefined keeps the card out. */
-function foldedLine(tool: string, state: CardSnapshot["state"], theme: Theme): MemberLine | undefined {
+function foldedLine(tool: string, state: CardSnapshot["state"], theme: Theme, cwd: unknown): MemberLine | undefined {
 	const plan = planFor(tool);
 	if (!plan) return undefined;
-	const result = state?.result as ToolResult;
-	const context: RenderContext = { args: state?.args as Record<string, unknown> | undefined, cwd: process.cwd(), isError: result?.isError === true };
+	const result = state?.result;
+	const context: RenderContext = {
+		args: state?.args as Record<string, unknown> | undefined,
+		cwd: cwd ?? process.cwd(),
+		isError: resultFailed(result),
+	};
 	const partial = state?.isPartial === true;
 	const fold = result
 		? plan.renderResult?.([result, { expanded: false, isPartial: partial }, theme, context])

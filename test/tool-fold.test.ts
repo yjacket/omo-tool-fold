@@ -381,11 +381,19 @@ function evalCard(definition: unknown, label: string, result: unknown = okEval, 
 	return toolCard("eval", definition, label, result, args);
 }
 
-function toolCard(toolName: string, definition: unknown, label: string, result: unknown, args: unknown): Card {
+function toolCard(
+	toolName: string,
+	definition: unknown,
+	label: string,
+	result: unknown,
+	args: unknown,
+	presentation = "classic",
+	cwd?: string,
+): Card {
 	return {
 		presentationSnapshot: {
-			presentation: "classic",
-			identity: { toolName, toolDefinition: definition },
+			presentation,
+			identity: { toolName, toolDefinition: definition, cwd },
 			state: { args, result, isPartial: false, expanded: false },
 		},
 		render: () => [`CARD ${label}`],
@@ -612,6 +620,167 @@ describe("tool-fold thinking labels and eval blocks", () => {
 		(marked as Record<PropertyKey, unknown>)[Symbol.for("omo.tool-fold.wrapped.v2")] = true;
 		const { im, project } = transcript(host, [evalCard(marked, "a"), evalCard(marked, "b")]);
 		expect(project()).toBe(im.chatContainer.children);
+	});
+});
+
+describe("grouping eligibility", () => {
+	const textResult = () => ({ details: {}, content: [{ type: "text", text: "ok" }] });
+
+	test("non-eval lines use the card cwd without changing membership order", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const write = session.getToolDefinition("write");
+		const cwd = "C:/work/project";
+		const first = toolCard("write", write, "a", textResult(), { path: "C:/work/project/a.ts" }, "classic", cwd);
+		const second = toolCard("write", write, "b", textResult(), { path: "C:/work/project/b.ts" }, "classic", cwd);
+		const out = transcript(host, [first, second]).project();
+		expect(out.length).toBe(1);
+		const lines = (out[0] as Grouped).render(80);
+		expect(lines).toContain("  └ write a.ts");
+		expect(lines).toContain("    write b.ts");
+		expect(lines.indexOf("  └ write a.ts")).toBeLessThan(lines.indexOf("    write b.ts"));
+		expect(lines.join("\n")).not.toContain("C:/work/project");
+	});
+
+	test("eval controls stay native in the call, result and member paths", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		for (const action of ["peek", "stop", "list", "brand-new-action"]) {
+			expect(def.renderCall({ action, summary: "s" }, theme, {})).toEqual({ original: "eval.call" });
+			expect(def.renderResult(okEval, {}, theme, { args: { action } })).toEqual({ original: "eval.result" });
+			const first = evalCard(def, "a");
+			const control = evalCard(def, `control ${action}`, okEval, { action });
+			const { project } = transcript(host, [first, control, evalCard(def, "b"), evalCard(def, "c")]);
+			const out = project();
+			expect(out.length).toBe(3);
+			expect(out[0]).toBe(first);
+			expect(out[1]).toBe(control);
+		}
+		expect(def.renderCall({ action: "run", summary: "s" }, theme, {})).toBeInstanceOf(FakeTruncatedText);
+		expect(def.renderResult(okEval, {}, theme, { args: { action: "run" } })).toBeInstanceOf(FakeTruncatedText);
+		expect(def.renderResult(okEval, {}, theme, { args: {} })).toBeInstanceOf(FakeTruncatedText);
+	});
+
+	test("cancelled, unknown, mixed and details-error eval results stay outside groups", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		const cases: { label: string; result: unknown }[] = [
+			{ label: "cancelled", result: { details: { cells: [{ status: "cancelled", language: "js", summary: "s" }] } } },
+			{ label: "unknown", result: { details: { cells: [{ status: "brand-new-status", language: "js", summary: "s" }] } } },
+			{
+				label: "mixed",
+				result: {
+					details: {
+						cells: [
+							{ status: "complete", language: "js", summary: "s" },
+							{ status: "error", language: "js", summary: "e" },
+						],
+					},
+				},
+			},
+			{ label: "details-error", result: { details: { ...okEval.details, isError: true } } },
+		];
+		for (const { label, result } of cases) {
+			const unsafe = evalCard(def, label, result);
+			const { project } = transcript(host, [evalCard(def, "a"), unsafe, evalCard(def, "b"), evalCard(def, "c")]);
+			const out = project();
+			expect(out.length).toBe(3);
+			expect(out[1]).toBe(unsafe);
+			expect((out[2] as Grouped).render(80)[1]).toBe("• Ran 2 evals");
+		}
+		const direct = def.renderResult({ details: { ...okEval.details, isError: true } }, {}, theme, {});
+		expect(direct).toEqual({ original: "eval.result" });
+	});
+
+	test("malformed and image content cards stay outside groups without mutation", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const write = session.getToolDefinition("write");
+		const cwd = "C:/work/project";
+		const image = { type: "image", data: "abc", mimeType: "image/png" };
+		const cases: { label: string; result: { details: Record<string, unknown>; content?: unknown } }[] = [
+			{ label: "image", result: { details: {}, content: [image] } },
+			{ label: "non-array", result: { details: {}, content: "plain" } },
+			{ label: "unknown-block", result: { details: {}, content: [{ type: "audio", data: "x" }] } },
+			{ label: "malformed-text", result: { details: {}, content: [{ type: "text" }] } },
+			{ label: "details-error", result: { details: { isError: true }, content: [{ type: "text", text: "x" }] } },
+		];
+		for (const { label, result } of cases) {
+			const before = structuredClone(result);
+			const unsafe = toolCard("write", write, label, result, { path: "C:/work/project/x.ts" }, "classic", cwd);
+			const first = toolCard("write", write, `${label} a`, textResult(), { path: "C:/work/project/a.ts" }, "classic", cwd);
+			const third = toolCard("write", write, `${label} b`, textResult(), { path: "C:/work/project/b.ts" }, "classic", cwd);
+			const fourth = toolCard("write", write, `${label} c`, textResult(), { path: "C:/work/project/c.ts" }, "classic", cwd);
+			const source = [first, unsafe, third, fourth];
+			const sourceBefore = [...source];
+			const out = transcript(host, source).project();
+			expect(out.length).toBe(3);
+			expect(out[1]).toBe(unsafe);
+			expect(out[0]).toBe(first);
+			expect(out[2]).toBeInstanceOf(FakeContainer);
+			expect(source).toEqual(sourceBefore);
+			expect(result).toEqual(before);
+			if (label === "image") expect((result.content as unknown[])[0]).toBe(image);
+		}
+		expect(write.renderResult({ details: {} }, {}, theme, { isError: true })).toEqual({ original: "write.result" });
+	});
+
+	test("grok presentation and kill_bash cards never join a group", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const grok = [
+			toolCard("eval", evalDef, "grok a", okEval, {}, "grok"),
+			toolCard("eval", evalDef, "grok b", okEval, {}, "grok"),
+		];
+		const grokOut = transcript(host, grok);
+		expect(grokOut.project()).toBe(grokOut.im.chatContainer.children);
+
+		const kill = [
+			toolCard("kill_bash", {}, "grok kill a", { details: {} }, { bash_id: "b1" }, "grok"),
+			toolCard("kill_bash", {}, "grok kill b", { details: {} }, { bash_id: "b2" }, "grok"),
+		];
+		const killOut = transcript(host, kill);
+		expect(killOut.project()).toBe(killOut.im.chatContainer.children);
+
+		const write = session.getToolDefinition("write");
+		const barrier = toolCard("kill_bash", {}, "kill", { details: {} }, { bash_id: "b1" });
+		const classic = transcript(host, [
+			toolCard("write", write, "a", textResult(), { path: "a.ts" }),
+			barrier,
+			toolCard("write", write, "b", textResult(), { path: "b.ts" }),
+		]);
+		const out = classic.project();
+		expect(out.length).toBe(3);
+		expect(out[1]).toBe(barrier);
+	});
+
+	test("terminal escape and control sequences never reach grouped lines", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const write = session.getToolDefinition("write");
+		const cwd = "C:/work/project";
+		const cards = [
+			toolCard("write", write, "a", textResult(), { path: "C:/work/project/\u001b[31ma.ts\u001b[0m" }, "classic", cwd),
+			toolCard("write", write, "b", textResult(), { path: "C:/work/project/\u001b]0;pwned\u0007b.ts" }, "classic", cwd),
+		];
+		const out = transcript(host, cards).project();
+		const rendered = (out[0] as Grouped).render(80).join("\n");
+		expect(rendered).toContain("write a.ts");
+		expect(rendered).toContain("write b.ts");
+		expect(rendered).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
+
+		const ws = session.getToolDefinition("web_search");
+		const query = "\u001b]0;pwned\u0007hello\u001b[2J";
+		const wsOut = transcript(host, [
+			toolCard("web_search", ws, "ws a", { details: {} }, { query }),
+			toolCard("web_search", ws, "ws b", { details: {} }, { query }),
+		]).project();
+		const text = (wsOut[0] as Grouped).render(80)[2];
+		expect(text).toBe("  └ web_search hello");
+		expect(text).not.toMatch(/[\u001B\u0007]/);
 	});
 });
 
