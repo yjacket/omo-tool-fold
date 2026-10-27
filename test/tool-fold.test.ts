@@ -784,6 +784,163 @@ describe("grouping eligibility", () => {
 	});
 });
 
+describe("todo grouping", () => {
+	const phases = [
+		{ name: "Setup", tasks: [{ content: "Write tests", status: "completed" }, { content: "Ship it", status: "pending" }] },
+		{ name: "Review", tasks: [{ content: "Read diff", status: "pending" }] },
+	];
+	const todoResult = (op: string, value: unknown = phases) => ({
+		details: { op, phases: value },
+		content: [{ type: "text", text: "original checklist\nbody" }],
+	});
+
+	test("eval, todo done and eval form one ordered mixed block", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const todo = session.getToolDefinition("todo");
+		const done = toolCard("todo", todo, "done", todoResult("done"), { op: "done", task: "Ship it" });
+		const out = transcript(host, [evalCard(evalDef, "a"), done, evalCard(evalDef, "b")]).project();
+		expect(out.length).toBe(1);
+		expect((out[0] as Grouped).render(80)).toEqual([
+			"",
+			"• Ran 3 tools · eval 2 · todo 1",
+			"  └ eval js ✓ 규칙 조사",
+			"    todo done: Ship it",
+			"    eval js ✓ 규칙 조사",
+		]);
+	});
+
+	test("two consecutive todos form one block with native titles", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const todo = session.getToolDefinition("todo");
+		const init = toolCard("todo", todo, "init", todoResult("init"), { op: "init", list: phases });
+		const append = toolCard("todo", todo, "append", todoResult("append"), {
+			op: "append",
+			phase: "Build",
+			items: ["one", "two"],
+		});
+		const out = transcript(host, [init, append]).project();
+		expect(out.length).toBe(1);
+		expect((out[0] as Grouped).render(80)).toEqual([
+			"",
+			"• Ran 2 tools · todo 2",
+			"  └ todo init (2 phases, 3 tasks)",
+			"    todo append: Build (2 items)",
+		]);
+	});
+
+	test("init counts its phased list and flat items before a result", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const todo = session.getToolDefinition("todo");
+		const phased = toolCard("todo", todo, "phased", undefined, {
+			op: "init",
+			list: [{ phase: "Setup", items: ["a", "b"] }, { phase: "Review", items: ["c"] }],
+		});
+		const flat = toolCard("todo", todo, "flat", undefined, { op: "init", items: ["only"] });
+		const lines = (transcript(host, [phased, flat]).project()[0] as Grouped).render(80);
+		expect(lines).toContain("  └ todo init (2 phases, 3 tasks)");
+		expect(lines).toContain("    todo init (1 phase, 1 task)");
+		expect(lines[1]).toContain("Running 2 tools · todo 2");
+	});
+
+	test("init totals come from details.phases and details.op wins after a result", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const todo = session.getToolDefinition("todo");
+		const onePhase = [{ name: "Only", tasks: [{ content: "a", status: "pending" }, { content: "b", status: "pending" }] }];
+		const counted = toolCard("todo", todo, "init", todoResult("init", onePhase), { op: "init", list: phases });
+		const normalized = toolCard("todo", todo, "view", todoResult("view"), { op: "done", task: "Ignored" });
+		const lines = (transcript(host, [counted, normalized]).project()[0] as Grouped).render(80);
+		expect(lines).toContain("  └ todo init (1 phase, 2 tasks)");
+		expect(lines).toContain("    todo view");
+		expect(lines.join("\n")).not.toContain("todo done");
+	});
+
+	test("append, rm, phase and missing-target forms mirror native titles", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const todo = session.getToolDefinition("todo");
+		const cards = [
+			toolCard("todo", todo, "append", undefined, { op: "append", phase: "Build", items: ["a", "b"] }),
+			toolCard("todo", todo, "rm-task", undefined, { op: "rm", task: "Old task" }),
+			toolCard("todo", todo, "rm-all", undefined, { op: "rm" }),
+			toolCard("todo", todo, "rm-phase", undefined, { op: "rm", phase: "Setup" }),
+			toolCard("todo", todo, "start", undefined, { op: "start", task: "Ship it" }),
+			toolCard("todo", todo, "drop", undefined, { op: "drop", phase: "Setup" }),
+			toolCard("todo", todo, "done", undefined, { op: "done" }),
+		];
+		const lines = (transcript(host, cards).project()[0] as Grouped).render(80);
+		expect(lines).toContain("  └ todo append: Build (2 items)");
+		expect(lines).toContain("    todo rm: Old task");
+		expect(lines).toContain("    todo rm: all");
+		expect(lines).toContain("    todo rm: Setup");
+		expect(lines).toContain("    todo start: Ship it");
+		expect(lines).toContain("    todo drop: Setup");
+		expect(lines).toContain("    todo done: (missing target)");
+	});
+
+	test("failed todo, unknown op and malformed targets stay native", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const todo = session.getToolDefinition("todo");
+		const cases: { label: string; result: unknown; args: unknown }[] = [
+			{ label: "failed", result: { isError: true, ...todoResult("done") }, args: { op: "done", task: "Ship it" } },
+			{
+				label: "details-error",
+				result: { details: { op: "done", phases, isError: true } },
+				args: { op: "done", task: "Ship it" },
+			},
+			{ label: "unknown-call", result: undefined, args: { op: "brand-new-op" } },
+			{ label: "unknown-result", result: todoResult("brand-new-op"), args: { op: "done", task: "Ship it" } },
+			{ label: "malformed-target", result: todoResult("done"), args: { op: "done", task: 42 } },
+			{ label: "malformed-phases", result: todoResult("init", "nope"), args: { op: "init", list: phases } },
+		];
+		for (const { label, result, args } of cases) {
+			const unsafe = toolCard("todo", todo, label, result, args);
+			const out = transcript(host, [evalCard(evalDef, "a"), unsafe, evalCard(evalDef, "b"), evalCard(evalDef, "c")]).project();
+			expect(out.length).toBe(3);
+			expect(out[1]).toBe(unsafe);
+			expect((out[2] as Grouped).render(80)[1]).toBe("• Ran 2 evals");
+		}
+	});
+
+	test("expanding a todo group shows the original checklist card, not the generated title", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const todo = session.getToolDefinition("todo");
+		const result = todoResult("done");
+		expect(todo.renderResult(result, { expanded: true }, theme, {})).toEqual({ original: "todo.result" });
+		const card = toolCard("todo", todo, "done", result, { op: "done", task: "Ship it" });
+		(card.presentationSnapshot as { state: { expanded: boolean } }).state.expanded = true;
+		const out = transcript(host, [evalCard(evalDef, "a"), card, evalCard(evalDef, "b")]).project();
+		const lines = (out[0] as Grouped).render(80);
+		expect(lines.slice(2)).toEqual(["CARD a", "CARD done", "CARD b"]);
+		expect(lines.join("\n")).not.toContain("todo done: Ship it");
+	});
+
+	test("todo target text drops terminal escapes and collapses newlines", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const todo = session.getToolDefinition("todo");
+		const cards = [
+			toolCard("todo", todo, "escape", undefined, { op: "done", task: "\u001b[31mShip\u001b[0m\u001b]0;pwned\u0007 it" }),
+			toolCard("todo", todo, "lines", undefined, { op: "start", task: "line one\nline two" }),
+		];
+		const lines = (transcript(host, cards).project()[0] as Grouped).render(80);
+		expect(lines).toContain("  └ todo done: Ship it");
+		expect(lines).toContain("    todo start: line one line two");
+		const rendered = lines.join("\n");
+		expect(rendered).not.toContain("\u001b");
+		expect(rendered).not.toContain("\u0007");
+		expect(rendered).not.toContain("\u0000");
+	});
+});
+
 describe("tool-fold history window", () => {
 	test("expansion resets only the non-owning display and preserves native return and source children", async () => {
 		const host = makeHost();

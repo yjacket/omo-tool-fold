@@ -276,6 +276,104 @@ const patchPlan: ToolPlan = {
 	},
 };
 
+const TODO_OPS = new Set(["init", "start", "done", "rm", "drop", "append", "view"]);
+
+/** Native todo titles sanitize text the same way: strip escapes, flatten lines, collapse spaces. */
+function todoText(value: string): string {
+	let flat = "";
+	for (const char of terminalSafe(value).replace(/[\r\n]+/g, " ")) {
+		const code = char.codePointAt(0) ?? 0;
+		flat += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : char;
+	}
+	return flat.replace(/\s+/g, " ").trim();
+}
+
+function todoCountLabel(count: number, singular: string): string {
+	return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+function todoPhases(phases: unknown): { phases: number; tasks: number } | undefined {
+	if (!Array.isArray(phases)) return undefined;
+	let tasks = 0;
+	for (const phase of phases) {
+		const items = (phase as { tasks?: unknown } | undefined)?.tasks;
+		if (!Array.isArray(items)) return undefined;
+		tasks += items.length;
+	}
+	return { phases: phases.length, tasks };
+}
+
+function todoCallCounts(record: Record<string, unknown>): { phases: number; tasks: number } | undefined {
+	if (record.list) {
+		if (!Array.isArray(record.list)) return undefined;
+		let tasks = 0;
+		for (const phase of record.list) {
+			const items = (phase as { items?: unknown } | undefined)?.items;
+			if (!Array.isArray(items)) return undefined;
+			tasks += items.length;
+		}
+		return { phases: record.list.length, tasks };
+	}
+	if (record.items) {
+		if (!Array.isArray(record.items)) return undefined;
+		return { phases: record.items.length > 0 ? 1 : 0, tasks: record.items.length };
+	}
+	return { phases: 0, tasks: 0 };
+}
+
+/** Native title target order is task, then phase; a present non-string is malformed. */
+function todoTarget(record: Record<string, unknown>): { text?: string; malformed?: true } {
+	for (const key of ["task", "phase"]) {
+		const value = record[key];
+		if (value === undefined || value === null) continue;
+		if (typeof value !== "string") return { malformed: true };
+		return { text: todoText(value) };
+	}
+	return {};
+}
+
+/**
+ * The title the native todo card shows. Args before a result; details.op is authoritative after
+ * normalization. Undefined keeps the native card, including an unknown explicit op.
+ */
+function todoTitle(args: unknown, details: unknown, hasResult: boolean): string | undefined {
+	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+	const resultDetails = details && typeof details === "object" ? (details as Record<string, unknown>) : undefined;
+	const op = hasResult ? resultDetails?.op : record.op;
+	if (op === undefined) return hasResult ? undefined : "todo";
+	if (typeof op !== "string" || !TODO_OPS.has(op)) return undefined;
+	switch (op) {
+		case "init": {
+			const counts = hasResult ? todoPhases(resultDetails?.phases) : todoCallCounts(record);
+			if (!counts) return undefined;
+			return `todo init (${todoCountLabel(counts.phases, "phase")}, ${todoCountLabel(counts.tasks, "task")})`;
+		}
+		case "append": {
+			const phase = record.phase;
+			if (phase !== undefined && phase !== null && typeof phase !== "string") return undefined;
+			const items = record.items;
+			if (items !== undefined && items !== null && !Array.isArray(items)) return undefined;
+			const count = Array.isArray(items) ? items.length : 0;
+			const name = typeof phase === "string" ? todoText(phase) : "";
+			return `todo append: ${name || "(missing phase)"} (${todoCountLabel(count, "item")})`;
+		}
+		case "start":
+		case "done":
+		case "drop": {
+			const target = todoTarget(record);
+			if (target.malformed) return undefined;
+			return `todo ${op}: ${target.text || "(missing target)"}`;
+		}
+		case "rm": {
+			const target = todoTarget(record);
+			if (target.malformed) return undefined;
+			return `todo rm: ${target.text || "all"}`;
+		}
+		case "view":
+			return "todo view";
+	}
+}
+
 const todoPlan: ToolPlan = {
 	renderResult([result, options, , context]) {
 		const res = result as ToolResult;
@@ -435,9 +533,15 @@ function snapshotLine(snapshot: CardSnapshot | undefined, getTheme: () => Theme)
 
 /** The non-eval card's one-line fold, exactly as its collapsed card draws it; undefined keeps the card out. */
 function foldedLine(tool: string, state: CardSnapshot["state"], theme: Theme, cwd: unknown): MemberLine | undefined {
+	const result = state?.result;
+	if (tool === "todo") {
+		const text = todoTitle(state?.args, (result as ToolResult)?.details, Boolean(result));
+		if (!text) return undefined;
+		const status = !result ? "call" : state?.isPartial === true ? "running" : "complete";
+		return { language: "", status, what: "", tool, text };
+	}
 	const plan = planFor(tool);
 	if (!plan) return undefined;
-	const result = state?.result;
 	const context: RenderContext = {
 		args: state?.args as Record<string, unknown> | undefined,
 		cwd: cwd ?? process.cwd(),
