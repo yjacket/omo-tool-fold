@@ -83,6 +83,9 @@ const PROVENANCE = join(RUN_TMP, "definition-provenance.json");
 const DEFINITIONS = join(RUN_TMP, "definition-shapes.json");
 const EXECUTE_COUNTER = join(RUN_TMP, "execute-calls.log");
 const MOUSE_LOG = join(RUN_TMP, "mouse-events.jsonl");
+// ConPTY re-serializes output and coalesces OSC titles, so a marker's byte offset does not
+// bound its frame. The extension records each committed frame here before writing the marker.
+const FRAME_LOG = join(RUN_TMP, "frames.jsonl");
 const noFold = process.env.QA_NO_FOLD === "1";
 const children = new Set();
 const cleanup = [];
@@ -151,16 +154,23 @@ const NATIVE_FIXTURES = [...NATIVE_TWO_SLOT, ...NATIVE_NO_SLOT, ...NATIVE_CALL_O
 const SYNTHETIC_NAMES = ["eval", "workflow", "workpool", "thread_send", "thread_report", "thread_answer", "mcp_context7_query-docs", "mcp_grep_app_searchGitHub"];
 const FIXTURE_TOOLS = [...NATIVE_FIXTURES, ...SYNTHETIC_NAMES];
 
+const TAIL_HEADER = "Ran 2 tools · eval 1 · kill_bash 1";
+const TAIL_BODY_MARKERS = ["QA_TAIL_EVAL_BODY", "QA_TAIL_KILL_DETAIL"];
+const TAIL_MEMBERS = 2;
+const SPINNER = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g;
 const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 const comprehensiveScenes = [
-  { name: "todo-mixed", markers: ["QA_ORIGINAL_COLLAPSED", "QA_TODO_ALPHA", "QA_TODO_BETA", "edit package.json", "QA_PATCH_MAIN", "QA_GLOB_MAIN"], foldMarkers: ["Ran "] },
-  { name: "native-defaults", markers: ["QA_KILL_RECEIPT", "QA_MONITOR_ARMED", "QA_WAKE_CLAMPED", "QA_SCHEDULE_NO_RUNNER", "QA_WORKFLOW_RUNNING", "QA_WORKPOOL_OPEN"], foldMarkers: ["Ran "] },
-  { name: "mcp", markers: ["QA_MCP_PREVIEW_MAIN", "QA_MCP_STUB_INACTIVE"], foldMarkers: ["Ran ", "QA_MCP_STUB_INACTIVE"] },
+  { name: "todo-mixed", markers: ["QA_ORIGINAL_COLLAPSED", "QA_TODO_ALPHA", "QA_TODO_BETA", "edit package.json", "QA_PATCH_MAIN", "QA_GLOB_MAIN"], foldMarkers: ["Ran 3 tools · eval 1 · todo 1 · edit 1", "eval js ✓ QA_EVAL_MIXED_SUMMARY", "todo init (1 phase, 2 tasks)", "edit package.json (+1/-1)", "QA_PATCH_MAIN", "glob qa/**/*.ts in src"] },
+  { name: "native-defaults", markers: ["QA_KILL_RECEIPT", "QA_MONITOR_ARMED", "QA_WAKE_CLAMPED", "QA_SCHEDULE_NO_RUNNER", "QA_WORKFLOW_RUNNING", "QA_WORKPOOL_OPEN"], foldMarkers: ["Running 2 tools · kill_bash 1 · monitor 1", "kill_bash bash_qa_old: QA_KILL_RECEIPT killed=1", "monitor armed mon_qa · QA_MONITOR", "QA_WAKE_CLAMPED", "QA_SCHEDULE_NO_RUNNER", "QA_WORKFLOW_RUNNING", "QA_WORKPOOL_OPEN"] },
+  { name: "mcp", markers: ["QA_MCP_PREVIEW_MAIN", "QA_MCP_STUB_INACTIVE"], foldMarkers: ["QA_MCP_QUERY_MAIN · QA_MCP_PREVIEW_MAIN", "QA_MCP_STUB_INACTIVE"] },
   { name: "semantic-failures", markers: ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR", "QA_NATIVE_BASH_INPUT", "QA_NATIVE_BASH_RESIZE"], foldMarkers: ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR", "QA_NATIVE_BASH_INPUT", "QA_NATIVE_BASH_RESIZE"] },
   { name: "decisions-media", markers: ["QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_NATIVE_HTML"], foldMarkers: ["QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_NATIVE_HTML"] },
-  { name: "receipts", markers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"], foldMarkers: ["Ran ", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"] },
+  { name: "receipts", markers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"], foldMarkers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"] },
   { name: "native-exploration", markers: ["Explored", "Read a.ts", "Search QA_GREP_PATTERN in src", "List src"], foldMarkers: ["Explored", "Read a.ts", "Search QA_GREP_PATTERN in src"] },
+  // The last scene keeps one mixed renderer-backed/projection-only group inside the final
+  // viewport: the main-screen TUI cannot scroll scrollback (a wheel report yields the mouse).
+  { name: "mixed-tail", markers: ["QA_TAIL_EVAL_SUMMARY", "QA_TAIL_KILL_RECEIPT"], foldMarkers: [TAIL_HEADER, "QA_TAIL_EVAL_SUMMARY", "kill_bash bash_qa_tail: QA_TAIL_KILL_RECEIPT"] },
 ];
 const UNSAFE_MARKERS = ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR",
   "QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_MCP_STUB_INACTIVE", "Explored", "Read a.ts", "Search QA_GREP_PATTERN in src"];
@@ -255,6 +265,11 @@ function comprehensiveFixture() {
   tool("grep", { pattern: "QA_GREP_PATTERN", path: "src" }, "QA_GREP_RESULT", undefined);
   tool("find", { pattern: "*.ts", path: "src" }, "QA_FIND_RESULT", undefined);
   tool("ls", { path: "src" }, "QA_LS_RESULT", undefined);
+  assistant([{ type: "text", text: "QA_BREAK_7" }]);
+
+  tool("eval", { language: "js", summary: "QA_TAIL_EVAL_SUMMARY", code: "/* QA_TAIL_EVAL */" }, "QA_TAIL_EVAL_BODY",
+    { language: "js", summary: "QA_TAIL_EVAL_SUMMARY", cells: [{ index: 0, status: "complete", language: "js", summary: "QA_TAIL_EVAL_SUMMARY" }] });
+  tool("kill_bash", { bash_id: "bash_qa_tail" }, "QA_TAIL_KILL_RECEIPT\nQA_TAIL_KILL_DETAIL", { bash_id: "bash_qa_tail", killed: 1 });
   assistant([{ type: "text", text: "QA_COMPREHENSIVE_END" }]);
   return {
     text: `${[{ type: "session", version: 3, id: "00000000-0000-7000-8000-000000000b03", timestamp: new Date(t0).toISOString(), cwd: REPO }, ...entries]
@@ -342,8 +357,34 @@ import { noticeEntryRenderer } from ${JSON.stringify(pathToFileURL(join(DIST, "c
 let pending;
 let mode;
 let seq = 0;
+let mouseInputs = 0;
+const tags = [];
+// Source cards whose own expansion state is on: the member-state proof for mouse toggles.
+const expandedCards = () => {
+  let count = 0;
+  for (const child of mode?.chatContainer?.children ?? []) {
+    try { if (child?.presentationSnapshot?.state?.expanded === true) count += 1; } catch {}
+  }
+  return count;
+};
 ${synthetic}
-const initial = InteractiveMode.prototype.renderInitialMessages;
+${comprehensive ? `// The committed frame and the rows the terminal shows, mapped exactly like resolveFrameLine.
+const recordFrame = (screen, state, tagged) => {
+  const lines = screen.previousLines ?? [];
+  const rows = screen.terminal.rows;
+  const anchor = screen.anchor ?? { kind: "unknown" };
+  const visible = [];
+  for (let row = 1; row <= rows; row += 1) {
+    const line = anchor.kind === "viewport" || anchor.kind === "unknown"
+      ? (screen.previousViewportTop ?? 0) + row - 1
+      : row - 1 - (anchor.frameTopScreenRow ?? 0);
+    visible.push(line >= 0 && line < lines.length ? lines[line] : "");
+  }
+  const mouseReady = anchor.kind !== "unknown" && anchor.epoch === screen.placementEpoch && anchor.rows === rows && anchor.columns === screen.terminal.columns;
+  appendFileSync(${JSON.stringify(FRAME_LOG)}, JSON.stringify({ ...state, tagged, phase: tagged ? pending : null, anchorKind: anchor.kind, mouseReady,
+    viewportTop: screen.previousViewportTop ?? 0, visible, lines }) + "\\n");
+};
+` : ""}const initial = InteractiveMode.prototype.renderInitialMessages;
 const expand = InteractiveMode.prototype.setToolsExpanded;
 const render = TuiMainScreen.prototype.doRender;
 const handleMouse = TuiMainScreen.prototype.handleMouseInput;
@@ -371,8 +412,11 @@ TuiMainScreen.prototype.doRender = function (...args) {
   const result = render.apply(this, args);
   seq += 1;
   const state = { phase: pending ?? null, seq, expanded: mode?.toolOutputExpanded,
-    historyStart: mode?.chatContainer?.display?.historyStart, children: mode?.chatContainer?.children?.length };
-  const encoded = Buffer.from(JSON.stringify(state)).toString("base64");
+    historyStart: mode?.chatContainer?.display?.historyStart, children: mode?.chatContainer?.children?.length, expandedCards: expandedCards(),
+    visibleFrom: mode?.chatContainer?.display?.visibleFrom, hydrationFloor: mode?.chatContainer?.display?.hydrationFloor };
+  ${comprehensive ? "if (mode?.renderer === this) recordFrame(this, state, Boolean(pending)); if (pending && mode?.renderer === this) tags.push({ phase: pending, state });" : ""}
+  // ConPTY keeps only the last title of a paint, so every title repeats all tags so far.
+  const encoded = Buffer.from(JSON.stringify(${comprehensive ? "{ ...state, tags }" : "state"})).toString("base64");
   this.terminal.write("\\x1b]0;QA_FRAME;" + seq + ";" + encoded + "\\x07");
   if (pending && mode?.renderer === this) {
     this.terminal.write("\\x1b]0;QA_HISTORY;" + pending + ";" + encoded + "\\x07");
@@ -384,7 +428,14 @@ ${comprehensive ? `if (typeof handleMouse === "function") {
   TuiMainScreen.prototype.handleMouseInput = function (data) {
     const before = seq;
     const result = handleMouse.call(this, data);
-    appendFileSync(${JSON.stringify(MOUSE_LOG)}, JSON.stringify({ before, after: seq, delta: seq - before }) + "\\n");
+    if (typeof data === "string" && data.startsWith("\\x1b[<")) {
+      // Tag the first frame committed after this SGR report, so the harness awaits that
+      // exact frame instead of any later or earlier one.
+      mouseInputs += 1;
+      pending = "mouse" + mouseInputs;
+      appendFileSync(${JSON.stringify(MOUSE_LOG)}, JSON.stringify({ input: mouseInputs, data: JSON.stringify(data), before, after: seq }) + "\\n");
+      this.requestRender();
+    }
     return result;
   };
 }` : ""}
@@ -439,55 +490,47 @@ function waitFrame(phase, from) {
     const check = () => {
       const tail = stream.subarray(from).toString("latin1");
       const match = new RegExp(`\\x1b\\]0;QA_HISTORY;${phase};([A-Za-z0-9+/=]+)\\x07`).exec(tail);
-      if (match) finish(undefined, { end: from + match.index + match[0].length, state: JSON.parse(Buffer.from(match[1], "base64").toString()) });
-    };
-    listeners.add(check);
-    check();
-  });
-}
-function waitNextFrame(afterSeq, from, phase) {
-  return new Promise((resolveFrame, reject) => {
-    const timer = setTimeout(() => finish(new Error(`No QA ${phase} frame with seq > ${afterSeq} after byte ${from}`)), TIMEOUT);
-    const finish = (error, value) => {
-      clearTimeout(timer);
-      listeners.delete(check);
-      error ? reject(error) : resolveFrame(value);
-    };
-    const check = () => {
-      const tail = stream.subarray(from).toString("latin1");
-      const pattern = /\x1b\]0;QA_FRAME;(\d+);([A-Za-z0-9+/=]+)\x07/g;
-      let match;
-      while ((match = pattern.exec(tail))) {
-        const state = JSON.parse(Buffer.from(match[2], "base64").toString());
-        if (state.seq > afterSeq) return finish(undefined, { end: from + match.index + match[0].length, state });
+      if (match) return finish(undefined, { start: from + match.index, end: from + match.index + match[0].length, state: JSON.parse(Buffer.from(match[1], "base64").toString()) });
+      // A coalesced title still carries the tag; phase names are unique within a run.
+      const frames = /\x1b\]0;QA_FRAME;\d+;([A-Za-z0-9+/=]+)\x07/g;
+      let frame;
+      while ((frame = frames.exec(tail))) {
+        const tag = JSON.parse(Buffer.from(frame[1], "base64").toString()).tags?.find((entry) => entry.phase === phase);
+        if (tag) return finish(undefined, { start: from + frame.index, end: from + frame.index + frame[0].length, state: tag.state });
       }
     };
     listeners.add(check);
     check();
   });
 }
-function waitNoFrame(afterSeq, ms) {
-  return new Promise((resolveAbsence) => {
-    const timer = setTimeout(() => finish(true), ms);
-    const finish = (absent) => { clearTimeout(timer); listeners.delete(check); resolveAbsence(absent); };
+// The display paints the tail first and hydrates older history over later self-scheduled
+// frames; a capture is the first frame after its tag whose hydration reached the floor.
+const hydrated = (state) => typeof state.visibleFrom === "number" && state.visibleFrom === state.hydrationFloor;
+async function settledFrame(phase, from) {
+  const tagged = await waitFrame(phase, from);
+  if (hydrated(tagged.state)) return { ...tagged, tagSeq: tagged.state.seq };
+  return new Promise((resolveFrame, reject) => {
+    const timer = setTimeout(() => finish(new Error(`No hydrated QA ${phase} frame after seq ${tagged.state.seq}`)), TIMEOUT);
+    const finish = (error, value) => {
+      clearTimeout(timer);
+      listeners.delete(check);
+      error ? reject(error) : resolveFrame(value);
+    };
     const check = () => {
-      const tail = stream.toString("latin1");
-      const pattern = /\x1b\]0;QA_FRAME;(\d+);/g;
-      let match;
-      while ((match = pattern.exec(tail))) if (Number(match[1]) > afterSeq) return finish(false);
+      const tail = stream.subarray(tagged.start).toString("latin1");
+      const frames = /\x1b\]0;QA_FRAME;(\d+);([A-Za-z0-9+/=]+)\x07/g;
+      let frame;
+      while ((frame = frames.exec(tail))) {
+        const { tags: _tags, ...state } = JSON.parse(Buffer.from(frame[2], "base64").toString());
+        if (state.seq > tagged.state.seq && hydrated(state)) {
+          return finish(undefined, { start: tagged.start + frame.index, end: tagged.start + frame.index + frame[0].length, state, tagSeq: tagged.state.seq });
+        }
+      }
     };
     listeners.add(check);
+    check();
   });
 }
-function latestFrame() {
-  const pattern = /\x1b\]0;QA_FRAME;(\d+);([A-Za-z0-9+/=]+)\x07/g;
-  let match;
-  let last;
-  const text = stream.toString("latin1");
-  while ((match = pattern.exec(text))) last = { end: match.index + match[0].length, state: JSON.parse(Buffer.from(match[2], "base64").toString()) };
-  return last;
-}
-
 function sanitizeScreen(text) {
   return text.split("\n").map((line) => line.replace(/\s+$/, "")).filter((line) => line.length > 0).join("\n");
 }
@@ -540,14 +583,6 @@ window.show = async (base64) => {
   return {viewport:Array.from({length:rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)??"").join("\\n"),
     scrollback:Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString(true)??"").join("\\n"),baseY:b.baseY,viewportY:b.viewportY, length:b.length};
 };
-window.findRow = (needle) => {
-  const b = window.term.buffer.active;
-  for (let i = b.viewportY; i < b.viewportY + rows; i += 1) {
-    const line = b.getLine(i)?.translateToString(true) ?? "";
-    if (line.includes(needle)) return i - b.viewportY + 1;
-  }
-  return 0;
-};
 window.findLine = (needle) => {
   const b = window.term.buffer.active;
   for (let i = 0; i < b.length; i += 1) if ((b.getLine(i)?.translateToString(true) ?? "").includes(needle)) return i;
@@ -596,15 +631,53 @@ window.scrollToText = (needle) => {
   await page.goto(`http://127.0.0.1:${server.port}/`, { waitUntil: "load" });
 }
 
-async function screenFor(end) {
-  await ensureBrowser();
-  const base64 = stream.subarray(0, end).toString("base64");
-  return page.evaluate(`window.show(${JSON.stringify(base64)})`);
+const CURSOR_MARKER = "\x1b_pi:c\x07";
+const committed = new Map();
+function frameRecords() {
+  return existsSync(FRAME_LOG) ? readFileSync(FRAME_LOG, "utf8").split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)) : [];
 }
+function frameRecord(seq) {
+  const record = frameRecords().find((entry) => entry.seq === seq);
+  if (!record) throw new Error(`QA committed frame record seq ${seq} missing`);
+  return record;
+}
+function latestRecord() {
+  const records = frameRecords();
+  if (records.length === 0) throw new Error("QA committed frame log is empty");
+  return records[records.length - 1];
+}
+const plainLine = (line) => Bun.stripANSI(line.replaceAll(CURSOR_MARKER, "")).replace(/\s+$/, "");
+// The visible rows of a committed frame, as the TUI maps terminal rows to frame lines.
+const visibleText = (record) => record.visible.map(plainLine).join("\n");
+// Attach a tagged frame's committed text to its capture; the full frame is the scrollback.
+function commit(phase, capture) {
+  const record = frameRecord(capture.state.seq);
+  if (!hydrated(record)) throw new Error(`QA ${phase} frame seq ${capture.state.seq} is not hydrated`);
+  committed.set(phase, record);
+  capture.viewport = visibleText(record);
+  capture.frame = { seq: record.seq, tagSeq: capture.tagSeq, viewportTop: record.viewportTop, lines: record.lines.length, anchorKind: record.anchorKind, mouseReady: record.mouseReady };
+  return capture;
+}
+// The committed frame up to the viewport bottom, so xterm scrollback holds every line above it.
+// Rows past the frame end stay blank, as on the terminal after a block shrinks.
+const frameBytes = (record) => Buffer.from(Array.from({ length: record.viewportTop + ROWS }, (_, index) => (record.lines[index] ?? "").replaceAll(CURSOR_MARKER, ""))
+  .join("\r\n"), "utf8").toString("base64");
 
 async function renderCaptures(palette = paletteFor(themeArg)) {
   await ensureBrowser();
   for (const [phase, capture] of Object.entries(report.captures)) {
+    if (comprehensive) {
+      // The PNG and text show the committed frame's visible rows; the frame text is every line it holds.
+      const screen = await page.evaluate(`window.show(${JSON.stringify(frameBytes(committed.get(phase)))})`);
+      capture.scrollback = committed.get(phase).lines.map(plainLine).join("\n");
+      writeFileSync(join(EVIDENCE, `${phase}.txt`), capture.viewport);
+      writeFileSync(join(EVIDENCE, `${phase}-frame.txt`), capture.scrollback);
+      writeFileSync(join(EVIDENCE, `${phase}.png`), await page.screenshot());
+      capture.screen = { baseY: screen.baseY, viewportY: screen.viewportY };
+      capture.sentinels = Object.fromEntries(["QA_COMPREHENSIVE_BEGIN", "QA_COMPREHENSIVE_END", ...ALL_MARKERS].map((needle) => [needle, capture.scrollback.includes(needle)]));
+      capture.palette = palette;
+      continue;
+    }
     const base64 = stream.subarray(0, capture.end).toString("base64");
     const screen = await page.evaluate(`window.show(${JSON.stringify(base64)})`);
     writeFileSync(join(EVIDENCE, `${phase}.txt`), screen.viewport);
@@ -623,7 +696,16 @@ async function renderCaptures(palette = paletteFor(themeArg)) {
 
 async function sceneCaptures() {
   if (!comprehensive || !report.captures.recollapsed) return;
+  // ConPTY re-serializes output on its own schedule, so only the closed stream is a complete
+  // terminal; it is kept as evidence of the state after the header round trip.
+  const terminal = await page.evaluate(`window.show(${JSON.stringify(stream.toString("base64"))})`);
+  report.finalTerminal = { baseY: terminal.baseY, viewportY: terminal.viewportY, length: terminal.length };
+  writeFileSync(join(EVIDENCE, "final-scrollback.txt"), terminal.scrollback);
+  writeFileSync(join(EVIDENCE, "final.txt"), terminal.viewport);
+  writeFileSync(join(EVIDENCE, "final.png"), await page.screenshot());
+  // Scenes come from the hydrated recollapsed frame, which holds the whole collapsed transcript.
   const final = report.captures.recollapsed;
+  await page.evaluate(`window.show(${JSON.stringify(frameBytes(committed.get("recollapsed")))})`);
   mkdirSync(join(EVIDENCE, "scenes"), { recursive: true });
   const lines = final.scrollback.split("\n");
   report.scenes = [];
@@ -688,7 +770,7 @@ try {
   const command = [process.execPath, CLI, "--session", SESSION, "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-approve", "--offline",
     ...(!noFold ? ["-e", join(REPO, "extension/tool-fold.ts")] : []), "-e", QA_TOOL];
   report.engine = { command, cwd: RUN_TMP, isolatedEnv: isolated, tempEnv: Object.fromEntries(["RUN_TMP", "TMPDIR", "TMP", "TEMP", "NODE_COMPILE_CACHE", "BUN_RUNTIME_TRANSPILER_CACHE_PATH"].map((key) => [key, env[key]])) };
-  const initial = waitFrame("initial", 0);
+  const initial = comprehensive ? settledFrame("initial", 0) : waitFrame("initial", 0);
   const engine = Bun.spawn(command, { cwd: RUN_TMP, env, terminal: { cols: COLS, rows: ROWS,
     data(_terminal, bytes) {
       stream = Buffer.concat([stream, Buffer.from(bytes)]);
@@ -699,69 +781,102 @@ try {
   report.engine.pid = engine.pid;
   report.captures.initial = await initial;
   if (comprehensive) {
-    await ensureBrowser();
-    const initialScreen = await screenFor(report.captures.initial.end);
-    report.captures.initial.screen = { baseY: initialScreen.baseY, viewportY: initialScreen.viewportY };
-    report.captures.initial.viewport = initialScreen.viewport;
-    const mouseReady = stream.toString("latin1").includes("[?1006h") &&
-      (stream.toString("latin1").includes("[?1000h") || stream.toString("latin1").includes("[?1002h"));
-    report.mouseMode = { sgr: stream.toString("latin1").includes("[?1006h"), tracking1000: stream.toString("latin1").includes("[?1000h"), tracking1002: stream.toString("latin1").includes("[?1002h"), ready: mouseReady };
+    commit("initial", report.captures.initial);
+    const raw = stream.toString("latin1");
+    const mouseReady = raw.includes("[?1006h") && (raw.includes("[?1000h") || raw.includes("[?1002h"));
+    report.mouseMode = { sgr: raw.includes("[?1006h"), tracking1000: raw.includes("[?1000h"), tracking1002: raw.includes("[?1002h"), ready: mouseReady };
     if (!mouseReady) throw new Error("QA mouse mode missing: expected ?1006h and ?1000h or ?1002h");
   }
   for (const phase of ["expanded", "recollapsed"]) {
     const from = stream.length;
-    const frame = waitFrame(phase, from);
+    const frame = comprehensive ? settledFrame(phase, from) : waitFrame(phase, from);
     report.actions.push({ action: "write", bytesHex: "0f", phase, fromByte: from, cols: COLS, rows: ROWS });
     engine.terminal.write("\x0f");
     report.captures[phase] = await frame;
+    if (comprehensive) commit(phase, report.captures[phase]);
   }
   if (comprehensive) {
-    const current = latestFrame();
-    const headerNeedle = "Ran ";
-    let row = await page.evaluate(`window.findRow(${JSON.stringify(headerNeedle)})`);
+    // The QA extension tags the first frame committed after each SGR report as mouse<N>,
+    // so each click awaits exactly the frame that shows its effect.
+    let mouseInputs = 0;
+    const click = async (row, purpose) => {
+      mouseInputs += 2;
+      const phase = `mouse${mouseInputs}`;
+      const from = stream.length;
+      const frame = settledFrame(phase, from);
+      report.actions.push({ action: "mouse-sgr", purpose, phase, row, col: 3, fromByte: from, sequence: `ESC[<0;3;${row}M ESC[<0;3;${row}m` });
+      engine.terminal.write(`\x1b[<0;3;${row}M\x1b[<0;3;${row}m`);
+      return frame;
+    };
+    const rowsOf = (record) => record.visible.map(plainLine);
+    const masked = (record) => sanitizeScreen(visibleText(record).replace(SPINNER, "*"));
+    const maskedFrame = (record) => record.lines.map((line) => plainLine(line).replace(SPINNER, "*")).join("\n");
+    // Rows owned by any group block: its spacer, header and member lines up to the next blank row.
+    const groupRows = (rows) => {
+      const owned = new Set();
+      rows.forEach((line, index) => {
+        if (!/(Ran|Running) \d+ (tools|evals)/.test(line)) return;
+        owned.add(index - 1);
+        for (let next = index; next < rows.length && (next === index || rows[next].trim().length > 0); next += 1) owned.add(next);
+      });
+      return owned;
+    };
+    // The viewport keeps the rows the expansion scrolled off, so the restored screen is the
+    // pre-click screen moved up by that many rows, with blank rows below the footer.
+    const alignedRestore = (before, after) => {
+      const beforeRows = before.visible.map((line) => plainLine(line).replace(SPINNER, "*"));
+      const afterRows = after.visible.map((line) => plainLine(line).replace(SPINNER, "*"));
+      let used = afterRows.length;
+      while (used > 0 && afterRows[used - 1] === "") used -= 1;
+      const offset = afterRows.length - used;
+      return { restoredOffset: offset, restoredAlignedEqual: afterRows.slice(0, used).join("\n") === beforeRows.slice(offset).join("\n") };
+    };
+    const requireMouse = (record, frameName) => {
+      if (!record.mouseReady || !hydrated(record)) throw new Error(`QA mouse anchor not ready (${record.anchorKind}) in ${frameName} frame seq ${record.seq}`);
+    };
+    const preRecord = latestRecord();
+    requireMouse(preRecord, "recollapsed");
+    writeFileSync(join(EVIDENCE, "mouse-pre.txt"), visibleText(preRecord));
+    report.mouseProof = { preSeq: preRecord.seq, preExpandedCards: preRecord.expandedCards };
     if (!noFold) {
-      if (!row) throw new Error("QA mixed-group header row not found in initial frame");
-      let from = stream.length;
-      let next = waitNextFrame(current.state.seq, from, "mouse-expanded");
-      report.actions.push({ action: "mouse-sgr", purpose: "header expand", row, col: 3, fromByte: from,
-        sequence: `ESC[<0;3;${row}M ESC[<0;3;${row}m` });
-      engine.terminal.write(`\x1b[<0;3;${row}M\x1b[<0;3;${row}m`);
-      report.captures["mouse-expanded"] = await next;
-      const mid = latestFrame();
-      from = stream.length;
-      next = waitNextFrame(mid.state.seq, from, "mouse-recollapsed");
-      report.actions.push({ action: "mouse-sgr", purpose: "header collapse", row, col: 3, fromByte: from,
-        sequence: `ESC[<0;3;${row}M ESC[<0;3;${row}m` });
-      engine.terminal.write(`\x1b[<0;3;${row}M\x1b[<0;3;${row}m`);
-      report.captures["mouse-recollapsed"] = await next;
-      const after = latestFrame();
-      const outsideNeedle = "QA_BREAK_6";
-      const outsideRow = await page.evaluate(`window.findRow(${JSON.stringify(outsideNeedle)})`);
-      const safeRow = outsideRow || Math.max(1, Math.min(ROWS, row + 3));
-      const beforeScreen = await screenFor(stream.length);
-      report.actions.push({ action: "mouse-sgr", purpose: "outside-header negative", row: safeRow, col: 3, fromByte: stream.length,
-        sequence: `ESC[<0;3;${safeRow}M ESC[<0;3;${safeRow}m` });
-      engine.terminal.write(`\x1b[<0;3;${safeRow}M\x1b[<0;3;${safeRow}m`);
-      await waitNoFrame(after.state.seq, 750);
-      const afterScreen = await screenFor(stream.length);
-      report.captures["mouse-outside"] = { end: stream.length, state: after.state, viewport: afterScreen.viewport };
-      report.mouseOutsideAbsent = sanitizeScreen(beforeScreen.viewport) === sanitizeScreen(afterScreen.viewport);
-    } else {
-      const outsideNeedle = "QA_BREAK_6";
-      row = await page.evaluate(`window.findRow(${JSON.stringify(outsideNeedle)})`);
-      const safeRow = row || 1;
-      const before = latestFrame();
-      const beforeScreen = await screenFor(stream.length);
-      report.actions.push({ action: "mouse-sgr", purpose: "native outside-header negative", row: safeRow, col: 3, fromByte: stream.length,
-        sequence: `ESC[<0;3;${safeRow}M ESC[<0;3;${safeRow}m` });
-      engine.terminal.write(`\x1b[<0;3;${safeRow}M\x1b[<0;3;${safeRow}m`);
-      await waitNoFrame(before.state.seq, 750);
-      const afterScreen = await screenFor(stream.length);
-      report.captures["mouse-outside"] = { end: stream.length, state: before.state, viewport: afterScreen.viewport };
-      report.mouseOutsideAbsent = sanitizeScreen(beforeScreen.viewport) === sanitizeScreen(afterScreen.viewport);
+      const headerIndex = rowsOf(preRecord).findIndex((line) => line.includes(TAIL_HEADER));
+      if (headerIndex < 0) throw new Error(`QA mixed-group header row not found in recollapsed frame seq ${preRecord.seq}`);
+      const expanded = commit("mouse-expanded", await click(headerIndex + 1, "header expand"));
+      report.captures["mouse-expanded"] = expanded;
+      const expandedRecord = committed.get("mouse-expanded");
+      requireMouse(expandedRecord, "mouse-expanded");
+      const expandedIndex = rowsOf(expandedRecord).findIndex((line) => line.includes(TAIL_HEADER));
+      if (expandedIndex < 0) throw new Error(`QA mixed-group header row not found in mouse-expanded frame seq ${expandedRecord.seq}`);
+      const restored = commit("mouse-recollapsed", await click(expandedIndex + 1, "header collapse"));
+      report.captures["mouse-recollapsed"] = restored;
+      Object.assign(report.mouseProof, {
+        headerRow: headerIndex + 1, expandedHeaderRow: expandedIndex + 1,
+        expandedCards: expanded.state.expandedCards, restoredCards: restored.state.expandedCards,
+        bodyVisibleBefore: TAIL_BODY_MARKERS.filter((marker) => visibleText(preRecord).includes(marker)),
+        bodyVisibleExpanded: TAIL_BODY_MARKERS.filter((marker) => expanded.viewport.includes(marker)),
+        // The main-screen viewport cannot scroll back after the block shrinks, so the restored
+        // screen proof is the committed frame plus the collapsed block on the visible rows.
+        restoredFrameEqual: maskedFrame(preRecord) === maskedFrame(committed.get("mouse-recollapsed")),
+        restoredVisibleEqual: masked(preRecord) === masked(committed.get("mouse-recollapsed")),
+        ...alignedRestore(preRecord, committed.get("mouse-recollapsed")),
+        restoredCollapsedVisible: restored.viewport.includes(TAIL_HEADER) && restored.viewport.includes("QA_TAIL_EVAL_SUMMARY") &&
+          restored.viewport.includes("kill_bash bash_qa_tail: QA_TAIL_KILL_RECEIPT") && TAIL_BODY_MARKERS.every((marker) => !restored.viewport.includes(marker)),
+      });
     }
+    const beforeRecord = latestRecord();
+    const beforeName = noFold ? "recollapsed" : "mouse-recollapsed";
+    requireMouse(beforeRecord, beforeName);
+    const beforeRows = rowsOf(beforeRecord);
+    const owned = groupRows(beforeRows);
+    const outsideIndex = beforeRows.findIndex((line, index) => line.includes("QA_COMPREHENSIVE_END") && !owned.has(index) && !line.includes("└"));
+    if (outsideIndex < 0) throw new Error(`QA outside-header row (non-group QA_COMPREHENSIVE_END text) not found in ${beforeName} frame seq ${beforeRecord.seq}`);
+    const outside = commit("mouse-outside", await click(outsideIndex + 1, noFold ? "native outside-header negative" : "outside-header negative"));
+    report.captures["mouse-outside"] = outside;
+    Object.assign(report.mouseProof, { outsideRow: outsideIndex + 1, outsideBeforeSeq: beforeRecord.seq, outsideBeforeCards: beforeRecord.expandedCards,
+      outsideAfterCards: outside.state.expandedCards, outsideScreenEqual: masked(beforeRecord) === masked(committed.get("mouse-outside")) });
   }
   await kill(engine, "isolated engine");
+  if (comprehensive) writeFileSync(join(EVIDENCE, "frames.jsonl"), existsSync(FRAME_LOG) ? readFileSync(FRAME_LOG) : "");
   writeFileSync(join(EVIDENCE, "raw.ansi"), stream);
   for (const [phase, capture] of Object.entries(report.captures)) {
     if (capture.end) writeFileSync(join(EVIDENCE, `${phase}.ansi`), stream.subarray(0, capture.end));
@@ -829,7 +944,8 @@ try {
     }
     report.assertions = [
       { name: "initial body visible", ok: initialScreen.includes("QA_COMPREHENSIVE") },
-      { name: "expanded full history rendered", ok: report.captures.expanded.state.historyStart >= 0 && report.captures.expanded.scrollback.includes("QA_EVAL_MIXED_OUTPUT") },
+      { name: "expanded full history rendered", ok: report.captures.expanded.state.historyStart === 0 && report.captures.expanded.state.expandedCards === sessionFixture.toolCount &&
+        report.captures.expanded.scrollback.includes("QA_EVAL_MIXED_OUTPUT") },
       { name: "expanded content visible", ok: report.captures.expanded.scrollback.includes("QA_COMPREHENSIVE_END") },
       { name: "recollapsed body visible", ok: finalScreen.includes("QA_COMPREHENSIVE_END") },
       { name: noFold ? "native scene markers after recollapse" : "grouped scene markers after recollapse",
@@ -838,16 +954,23 @@ try {
       { name: "unsafe cards outside compact runs", ok: UNSAFE_MARKERS.every((marker) => finalScrollback.includes(marker)) },
       { name: "definition provenance and slots", ok: shapeFailures.length === 0 && (provenance.failures ?? []).length === 0, failures: [...(provenance.failures ?? []), ...shapeFailures] },
       { name: "synthetic fixtures never execute", ok: executeCalls === 0 && !stream.toString().includes("QA_MUST_NOT_EXECUTE"), executeCalls },
-      { name: "fixture tool-card count", ok: sessionFixture.toolCount === 31, actual: sessionFixture.toolCount },
+      { name: "fixture tool-card count", ok: sessionFixture.toolCount === 33, actual: sessionFixture.toolCount },
       { name: "mouse mode enabled", ok: report.mouseMode?.ready === true },
-      { name: "outside-header click is a no-op", ok: report.mouseOutsideAbsent === true && mouseEvents.length > 0 },
+      { name: "outside-header click is a no-op", ok: report.mouseProof.outsideScreenEqual === true && mouseEvents.length > 0 &&
+        report.mouseProof.outsideAfterCards === report.mouseProof.outsideBeforeCards, proof: report.mouseProof },
       { name: "no runtime renderer failure", ok: !/QA_RENDER_SEAM_MISSING|Failed to load extension|TypeError:|detachAll|\[render error/.test(Bun.stripANSI(stream.toString())) },
       { name: "runtime version recorded", ok: typeof report.runtime.version === "string" && report.runtime.version.length > 0 },
-      { name: "captures complete", ok: ["initial", "expanded", "recollapsed", ...(noFold ? [] : ["mouse-expanded", "mouse-recollapsed"])].every((phase) => existsSync(join(EVIDENCE, `${phase}.png`))) },
+      { name: "captures complete", ok: ["initial", "expanded", "recollapsed", "mouse-outside", ...(noFold ? [] : ["mouse-expanded", "mouse-recollapsed"])].every((phase) => existsSync(join(EVIDENCE, `${phase}.png`))) },
     ];
     if (!noFold) {
-      report.assertions.push({ name: "header click toggles members", ok: report.captures["mouse-expanded"].scrollback !== report.captures["mouse-recollapsed"].scrollback ||
-        report.captures["mouse-expanded"].state.seq !== report.captures["mouse-recollapsed"].state.seq });
+      const proof = report.mouseProof;
+      report.assertions.push(
+        { name: "header click expands every member", ok: proof.preExpandedCards === 0 && proof.expandedCards === TAIL_MEMBERS &&
+          proof.bodyVisibleBefore.length === 0 && proof.bodyVisibleExpanded.length === TAIL_BODY_MARKERS.length, proof },
+        { name: "second header click restores the pre-click screen", ok: proof.restoredFrameEqual === true && proof.restoredAlignedEqual === true && proof.restoredCollapsedVisible === true &&
+          proof.restoredOffset === proof.headerRow - proof.expandedHeaderRow &&
+          proof.restoredCards === proof.preExpandedCards, proof },
+      );
     }
   } else {
     report.assertions = [
