@@ -2,7 +2,7 @@
 
 English | [한국어](README.ko.md)
 
-An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. Finished hidden thinking leaves no `Thought:` line, and two or more folded tool calls in a row (eval, edit, write, ...) read as one short block. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
+An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. Finished hidden thinking leaves no `Thought:` line, and two or more eligible tool calls in a row (eval, edit, todo, terminal controls, thread receipts, ...) read as one short block. Questions, images, errors and native-only tools stay visible as their own cards. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
 
 ## What you see
 
@@ -60,19 +60,19 @@ If you installed with the old copy scripts, delete `~/.omo/agent/extensions/tool
 - **eval:** `eval js ✓ <first line of the cell summary>`. Error, cancelled, or unknown-status cells keep the original full box.
 - **edit:** `edit <path relative to cwd> (+added/-removed)`.
 - **apply_patch:** `apply_patch <path relative to cwd or N files> (+added/-removed)`. Counts come from the applied preview; partial failures and missing preview data keep the original output.
-- **todo:** only the title line, for example `todo done: A 확인`. The full list is still there through `/todo` and the todo widget under the input box.
+- **todo:** when a todo call stands alone, only the title line is drawn, for example `todo done: A 확인`. The same title is used inside a block. The full list is still there through `/todo` and the todo widget under the input box.
 - **These 27 tools** fold to `<tool> <verb> <target>`: web_search, webfetch, write, memory, look_at, powershell, bash_output, tool_search, task, task_output, task_send, task_cancel, team_create, team_delete, task_create, task_get, task_list, task_update, create_goal, update_goal, get_goal, lsp_diagnostics, lsp_goto_definition, lsp_find_references, lsp_symbols, lsp_prepare_rename, lsp_rename.
+- **bash, glob and six MCP tools** also fold: `bash`, `glob`, `mcp__ast_grep_rewrite`, `mcp__ast_grep_scan`, `mcp__ast_grep_search`, `mcp_context7_query-docs`, `mcp_context7_resolve-library-id`, `mcp_grep_app_searchGitHub`. `bash` shares the shell line with `powershell`; an MCP line keeps its native preview text.
   - Verb is the `op`, `action` or `command` argument when it's one short token.
   - Target is the first non-empty line of the first present argument among `task_summary`, `description`, `summary`, `query`, `url`, `objective`, `goal`, `prompt`, `message`, `command`, `file_path`, `path`, `filePath`, `pattern`, `name`, `task_id`, `to`, `bash_id`, `status`, `reason`. Paths are shown relative to cwd.
 
-Left alone on purpose:
+**Projection-only members (22 names).** These get no renderer override: a lone card stays exactly as its owner draws it. In a run of two or more, the run lists computed summary lines, and expanding shows the original cards. They are kill_bash, monitor, schedule_wakeup, schedule_prompt, workflow, workpool, thread_create, thread_list, thread_read, thread_send, thread_interrupt, thread_handoff, thread_rename, thread_set_model, thread_set_reasoning, thread_bind, thread_unbind, thread_rebind, thread_bindings, thread_report, thread_outbox, thread_outbox_ack. Admission is shape-checked: `monitor` only for a registration with no action (its card supplies only renderCall); thread tools only for an ok result; rearm, human-input, question/answer, error and unknown shapes stay native.
 
-- **read, grep, find, ls.** Senpi already groups consecutive calls into one exploration line, and that grouping checks the renderer's identity. Wrapping them would break it.
-- **ask_user_question.** It's a question card, meant to be seen.
-- **Tools without renderCall or renderResult.** They're already short.
-- **Every tool not listed above.** A tool added by a future OMO update is never folded blindly.
+**Native-preserved (18 names).** bash_input, bash_resize, read, grep, find, ls, request_user_input, ask_user_question, generate_image, read_video, show_html_page, computer, omo_browser_bridge, $web_search, onboarding_session_history, onboarding_understand, onboarding_memory_apply, thread_answer. Senpi's exploration grouping owns read/grep/find/ls, decision cards must be seen, and media or unsupported shapes keep their native renderer. Inactive MCP stubs (call slot only) stay native too.
 
-Any error result (`result.isError` or the render context's `isError`) shows the original full output.
+That is the finite scope: of the 79 names in the observed catalog, 61 are conditionally eligible (39 renderer-backed plus 22 projection-only) and 18 stay native. A tool added by a future OMO update is never folded blindly, and no name is admitted by wildcard or prefix.
+
+Any error result (`result.isError`, `details.isError`, or the render context's `isError`) shows the original full output. Non-text content such as images, failed or cancelled states, partial apply_patch results and unknown required shapes also stay native.
 
 ## Finished thinking
 
@@ -83,10 +83,11 @@ Any error result (`result.isError` or the render context's `isError`) shows the 
 
 ## Consecutive folded calls
 
-- Every tool this extension folds (eval, edit, apply_patch, write and the other one-line tools above) can join a block, but only while its card is folded to one line. Failed calls, apply_patch with failed hunks, cancelled and unknown-status evals end the block and keep their full box. Eval peek, stop and list calls and the todo checklist also end the block.
+- Every eligible tool above can join a block while its collapsed presentation is this extension's one line. That includes todo and the 22 projection-only names; projection-only cards are only summarized inside a run of two or more. Failed calls, apply_patch with failed hunks, cancelled and unknown-status evals end the block and keep their full box. Eval peek, stop and list calls, questions, answers, media and native-only tools also end the block.
 - Assistant steps that hold only hidden thinking don't break the block.
-- A tool this extension leaves unfolded (read, grep, find, ls, ask_user_question, ...) breaks it.
-- Ctrl+O, or a click on the header, shows the original boxes under the header. Do it again to fold them back.
+- A tool that stays native (read, grep, find, ls, ask_user_question, media, MCP stubs, ...) breaks it.
+- A returned background-shell receipt (details.background plus bash_id) is labeled `background <id>`; it means the job was launched, not that it finished.
+- Ctrl+O, or a click on the header, shows the original boxes under the header. Do it again to fold them back; this behavior is unchanged.
 - While any member is still running, the header shows a spinner and reads `Running N evals` (or `Running N tools · ...`). That member's line shows its state word, for example `py running 데이터 분석`.
 - The list has no line cap.
 
@@ -119,7 +120,7 @@ Senpi has no public API for changing how another extension's tool is drawn. So t
 Additional seams drive the newer features. Each one is feature-detected on its own:
 
 - `AssistantMessageComponent.prototype.reconcileRenderDescriptors` hides finished thinking lines.
-- `InteractiveMode.prototype.createToolExecutionComponent` reaches the transcript container's `project()`, which filters hidden notices and groups evals. Both change only the drawn projection. They never touch `chatContainer.children` or stored results.
+- `InteractiveMode.prototype.createToolExecutionComponent` reaches the transcript container's `project()`, which filters hidden notices and groups eligible tool runs. Both change only the drawn projection. They never touch `chatContainer.children` or stored results.
 - `InteractiveMode.prototype.setToolsExpanded` resets the non-owning display's history window after Ctrl+O. Long expanded output must not leave compact summaries outside the visible range when folded again. This applies equally to Claude and Codex; source cards and stored messages stay intact.
 
 Fail-safe behavior:

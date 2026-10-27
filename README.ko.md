@@ -2,7 +2,7 @@
 
 [English](README.md) | 한국어
 
-도구 출력이 접힌 상태일 때(TUI 기본값, Ctrl+O로 전환) 도구 호출 하나를 한 줄로 줄여 보여 주는 OMO(senpi) 확장입니다. 각 줄에는 도구 이름과 한 일이 나오므로, 긴 세션도 상자 더미가 아니라 로그처럼 읽힙니다. Ctrl+O로 펼치면 모든 도구가 원래 전체 출력을 그대로 보여 줍니다. 숨긴 사고가 끝나면 `Thought:` 줄이 남지 않고, 연달아 부른 접히는 도구(eval, edit, write 등)는 짧은 묶음 하나로 보입니다. 내 메시지는 파란 기운, 도구 상자는 거의 흰색으로 바꾼 밝은 테마 `grok-day-focus`도 함께 들어 있습니다.
+도구 출력이 접힌 상태일 때(TUI 기본값, Ctrl+O로 전환) 도구 호출 하나를 한 줄로 줄여 보여 주는 OMO(senpi) 확장입니다. 각 줄에는 도구 이름과 한 일이 나오므로, 긴 세션도 상자 더미가 아니라 로그처럼 읽힙니다. Ctrl+O로 펼치면 모든 도구가 원래 전체 출력을 그대로 보여 줍니다. 숨긴 사고가 끝나면 `Thought:` 줄이 남지 않고, 연달아 부른 대상 도구(eval, edit, todo, 터미널 제어, 스레드 영수증 등)는 짧은 묶음 하나로 보입니다. 질문, 이미지, 오류, 원래 표시를 유지하는 도구는 자기 카드로 계속 보입니다. 내 메시지는 파란 기운, 도구 상자는 거의 흰색으로 바꾼 밝은 테마 `grok-day-focus`도 함께 들어 있습니다.
 
 ## 화면에 보이는 것
 
@@ -60,19 +60,19 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 - **eval:** `eval js ✓ <셀 summary 첫 줄>`. 오류, 취소, 상태를 알 수 없는 셀은 원래 상자를 그대로 보여 줍니다.
 - **edit:** `edit <cwd 기준 경로> (+추가/-삭제)`.
 - **apply_patch:** `apply_patch <cwd 기준 경로 또는 N files> (+추가/-삭제)`. 실제 적용 결과의 줄 수를 보여 줍니다. 부분 실패나 미리보기 데이터가 없는 결과는 원래 출력을 유지합니다.
-- **todo:** 제목 줄만 남깁니다. 예: `todo done: A 확인`. 전체 목록은 `/todo` 명령과 입력창 아래 todo 위젯에서 볼 수 있습니다.
+- **todo:** 혼자 있을 때는 제목 줄만 그립니다. 예: `todo done: A 확인`. 묶음 안에서도 같은 제목을 씁니다. 전체 목록은 `/todo` 명령과 입력창 아래 todo 위젯에서 볼 수 있습니다.
 - **다음 27개 도구**는 `<tool> <verb> <target>` 형태로 접힙니다: web_search, webfetch, write, memory, look_at, powershell, bash_output, tool_search, task, task_output, task_send, task_cancel, team_create, team_delete, task_create, task_get, task_list, task_update, create_goal, update_goal, get_goal, lsp_diagnostics, lsp_goto_definition, lsp_find_references, lsp_symbols, lsp_prepare_rename, lsp_rename.
+- **bash, glob과 MCP 도구 여섯 개**도 접힙니다: `bash`, `glob`, `mcp__ast_grep_rewrite`, `mcp__ast_grep_scan`, `mcp__ast_grep_search`, `mcp_context7_query-docs`, `mcp_context7_resolve-library-id`, `mcp_grep_app_searchGitHub`. `bash`는 `powershell`과 같은 셸 줄을 쓰고, MCP 줄은 원래 미리보기 문구를 유지합니다.
   - verb는 `op`, `action`, `command` 인자가 짧은 한 단어일 때 그 값입니다.
   - target은 `task_summary`, `description`, `summary`, `query`, `url`, `objective`, `goal`, `prompt`, `message`, `command`, `file_path`, `path`, `filePath`, `pattern`, `name`, `task_id`, `to`, `bash_id`, `status`, `reason` 가운데 처음 나오는 인자의 비어 있지 않은 첫 줄입니다. 경로는 cwd 기준으로 줄여 보여 줍니다.
 
-일부러 건드리지 않는 것:
+**묶음 전용 구성원(22개).** 렌더러를 바꾸지 않습니다. 혼자 있는 카드는 원래 도구가 그리는 그대로입니다. 두 개 이상 연달아 오면 묶음에 계산된 요약 줄이 나오고, 펼치면 원래 카드가 나옵니다. 대상은 kill_bash, monitor, schedule_wakeup, schedule_prompt, workflow, workpool, thread_create, thread_list, thread_read, thread_send, thread_interrupt, thread_handoff, thread_rename, thread_set_model, thread_set_reasoning, thread_bind, thread_unbind, thread_rebind, thread_bindings, thread_report, thread_outbox, thread_outbox_ack입니다. 모양 검사를 통과해야 합니다: `monitor`는 action 없는 등록만(카드에 renderCall만 있음), 스레드 도구는 ok 결과만 묶이며 rearm, 사람 입력, 질문/답변, 오류, 알 수 없는 모양은 원래대로 남습니다.
 
-- **read, grep, find, ls.** senpi가 이미 연속 호출을 탐색 한 줄로 묶어 주는데, 이 묶음은 렌더러가 같은 객체인지 확인합니다. 감싸면 묶음이 깨집니다.
-- **ask_user_question.** 질문 카드라서 보여야 합니다.
-- **renderCall이나 renderResult가 없는 도구.** 원래 짧습니다.
-- **위 목록에 없는 모든 도구.** 앞으로 OMO 업데이트로 추가되는 도구를 모르는 채로 접지 않기 위해서입니다.
+**원래 표시 유지(18개).** bash_input, bash_resize, read, grep, find, ls, request_user_input, ask_user_question, generate_image, read_video, show_html_page, computer, omo_browser_bridge, $web_search, onboarding_session_history, onboarding_understand, onboarding_memory_apply, thread_answer입니다. read/grep/find/ls는 senpi 탐색 묶음이 맡고, 결정 카드는 보여야 하며, 미디어와 지원하지 않는 모양은 원래 렌더러를 유지합니다. renderCall만 있는 비활성 MCP 스텁도 원래대로 남습니다.
 
-결과가 오류이면(`result.isError` 또는 렌더 컨텍스트의 `isError`) 원래 전체 출력을 보여 줍니다.
+이것이 유한한 범위입니다. 관찰된 카탈로그 79개 중 61개가 조건부 대상(렌더러 39개 + 묶음 전용 22개)이고 18개는 원래 표시를 유지합니다. 앞으로 OMO 업데이트로 추가되는 도구를 모르는 채로 접지 않으며, 와일드카드나 접두사로 이름을 받지 않습니다.
+
+결과가 오류이면(`result.isError`, `details.isError` 또는 렌더 컨텍스트의 `isError`) 원래 전체 출력을 보여 줍니다. 이미지 같은 비텍스트 내용, 실패/취소 상태, 일부 헝크가 실패한 apply_patch, 알 수 없는 필수 모양도 원래대로 남습니다.
 
 ## 끝난 사고 줄
 
@@ -83,10 +83,11 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 
 ## 연속 도구 묶음
 
-- 이 확장이 접는 도구(eval, edit, apply_patch, write와 위의 한 줄 도구들)는 모두 묶음에 들어갈 수 있습니다. 단, 카드가 한 줄로 접혀 있을 때만입니다. 실패한 호출, 일부 헌크가 실패한 apply_patch, 취소되거나 상태를 알 수 없는 eval은 묶음을 끝내고 원래 상자를 그대로 보여 줍니다. eval의 peek, stop, list 호출과 todo 체크리스트도 묶음을 끝냅니다.
+- 위의 대상 도구는 접힌 표시가 이 확장의 한 줄일 때 묶음에 들어갈 수 있습니다. todo와 묶음 전용 22개도 포함되며, 묶음 전용 카드는 두 개 이상의 묶음 안에서만 요약됩니다. 실패한 호출, 일부 헌크가 실패한 apply_patch, 취소되거나 상태를 알 수 없는 eval은 묶음을 끝내고 원래 상자를 그대로 보여 줍니다. eval의 peek, stop, list 호출, 질문, 답변, 미디어, 원래 표시 도구도 묶음을 끝냅니다.
 - 사이에 숨긴 사고만 있는 어시스턴트 단계가 끼어도 묶음은 이어집니다.
-- 이 확장이 접지 않는 도구(read, grep, find, ls, ask_user_question 등)가 나오면 묶음이 끊깁니다.
-- Ctrl+O를 누르거나 머리 줄을 클릭하면 머리 줄 아래에 원래 상자들이 나옵니다. 한 번 더 하면 다시 접힙니다.
+- 원래 표시로 남는 도구(read, grep, find, ls, ask_user_question, 미디어, MCP 스텁 등)가 나오면 묶음이 끊깁니다.
+- 백그라운드 셸 영수증(details.background와 bash_id)은 `background <id>`로 표시됩니다. 작업이 시작되었다는 뜻이며 끝났다는 뜻이 아닙니다.
+- Ctrl+O를 누르거나 머리 줄을 클릭하면 머리 줄 아래에 원래 상자들이 나옵니다. 한 번 더 하면 다시 접힙니다. 이 동작은 바뀌지 않았습니다.
 - 아직 실행 중인 eval이 있으면 머리 줄에 스피너가 돌고 `Running N evals`(섞인 묶음은 `Running N tools · ...`)로 바뀝니다. 그 eval 줄에는 `py running 데이터 분석`처럼 상태 단어가 나옵니다.
 - 줄 수 제한은 없습니다.
 
@@ -119,7 +120,7 @@ senpi에는 다른 확장이 만든 도구의 그리기 방식을 바꾸는 공�
 새 기능은 다음 접점을 더 씁니다. 각각 따로 존재 여부를 확인합니다.
 
 - `AssistantMessageComponent.prototype.reconcileRenderDescriptors`: 끝난 사고 줄을 숨깁니다.
-- `InteractiveMode.prototype.createToolExecutionComponent`: 이걸 거쳐 대화 기록 컨테이너의 `project()`에 닿고, 거기서 숨길 알림을 거른 뒤 eval을 묶습니다. 둘 다 화면에 그릴 목록만 바꿉니다. `chatContainer.children`과 저장된 결과는 건드리지 않습니다.
+- `InteractiveMode.prototype.createToolExecutionComponent`: 이걸 거쳐 대화 기록 컨테이너의 `project()`에 닿고, 거기서 숨길 알림을 거른 뒤 대상 도구 호출을 묶습니다. 둘 다 화면에 그릴 목록만 바꿉니다. `chatContainer.children`과 저장된 결과는 건드리지 않습니다.
 - `InteractiveMode.prototype.setToolsExpanded`: Ctrl+O 전환 뒤 표시용 컨테이너의 기록 범위를 초기화합니다. 긴 출력을 펼쳤다가 접어도 요약 줄이 표시 범위 밖으로 밀려 사라지지 않습니다. Claude와 Codex에 똑같이 적용되며 원본 카드와 저장된 메시지는 그대로 둡니다.
 
 안전장치:
