@@ -218,7 +218,7 @@ function terminalSafe(value: string): string {
 function firstLine(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	for (const raw of value.split("\n")) {
-		const text = terminalSafe(raw).trim();
+		const text = terminalSafe(raw).replace(/[\r\t]+/g, " ").trim();
 		if (text) return text;
 	}
 	return undefined;
@@ -537,7 +537,7 @@ function scheduleWakeupLine(args: unknown, result: unknown): ProjectionLine | un
 	if (details.action === "stopped") {
 		const ignored = details.ignoredFields;
 		if (ignored !== undefined && (!Array.isArray(ignored) || ignored.some((field) => typeof field !== "string"))) return undefined;
-		const suffix = Array.isArray(ignored) && ignored.length > 0 ? ` ignored ${ignored.join(", ")}` : "";
+		const suffix = Array.isArray(ignored) && ignored.length > 0 ? ` ignored ${ignored.map(plainText).join(", ")}` : "";
 		return { text: `schedule_wakeup stopped: ${reason}${suffix}`, status: "complete" };
 	}
 	return undefined;

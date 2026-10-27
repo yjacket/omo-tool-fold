@@ -978,6 +978,80 @@ describe("todo grouping", () => {
 		expect(rendered).not.toContain("\u0007");
 		expect(rendered).not.toContain("\u0000");
 	});
+
+	test("grouping eligibility: a compact row replaces an interior CR with a space", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		host.defs.webfetch = { renderCall: () => ({ original: "webfetch.call" }), renderResult: () => ({ original: "webfetch.result" }) };
+		const webfetch = session.getToolDefinition("webfetch");
+		const evalDef = session.getToolDefinition("eval");
+		const target = toolCard("webfetch", webfetch, "cr", { details: {} }, { url: "build\rOK" });
+		const lines = (transcript(host, [evalCard(evalDef, "a"), target]).project()[0] as Grouped).render(80);
+		const rendered = lines.join("\n");
+		expect(rendered).toContain("webfetch build OK");
+		expect(rendered).not.toContain("\r");
+	});
+
+	test("grouping eligibility: a compact row replaces an interior TAB with a space", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		host.defs.webfetch = { renderCall: () => ({ original: "webfetch.call" }), renderResult: () => ({ original: "webfetch.result" }) };
+		const webfetch = session.getToolDefinition("webfetch");
+		const evalDef = session.getToolDefinition("eval");
+		const target = toolCard("webfetch", webfetch, "tab", { details: {} }, { url: "a\tb" });
+		const lines = (transcript(host, [evalCard(evalDef, "a"), target]).project()[0] as Grouped).render(80);
+		const rendered = lines.join("\n");
+		expect(rendered).toContain("webfetch a b");
+		expect(rendered).not.toContain("\t");
+	});
+
+	test("grouping eligibility: a powershell row replaces interior TAB and CR with spaces", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		host.defs.powershell = { renderCall: () => ({ original: "powershell.call" }), renderResult: () => ({ original: "powershell.result" }) };
+		const powershell = session.getToolDefinition("powershell");
+		const evalDef = session.getToolDefinition("eval");
+		const shell = toolCard("powershell", powershell, "shell", { details: {} }, { command: "npm\trun\rdev" });
+		const lines = (transcript(host, [evalCard(evalDef, "a"), shell]).project()[0] as Grouped).render(80);
+		const rendered = lines.join("\n");
+		expect(rendered).toContain("powershell npm run dev");
+		expect(rendered).not.toContain("\t");
+		expect(rendered).not.toContain("\r");
+	});
+
+	test("grouping eligibility: an eval summary row replaces an interior TAB with a space", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const tabbed = { details: { cells: [{ status: "complete", language: "js", summary: "a\tb" }] } };
+		const lines = (transcript(host, [evalCard(evalDef, "a"), evalCard(evalDef, "tab", tabbed)]).project()[0] as Grouped).render(80);
+		const rendered = lines.join("\n");
+		expect(rendered).toContain("js \u2713 a b");
+		expect(rendered).not.toContain("\t");
+	});
+
+	test("grouping eligibility: ignoredFields strips escapes and controls", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		host.defs.schedule_wakeup = { execute: mock(() => undefined) };
+		const wake = session.getToolDefinition("schedule_wakeup");
+		const evalDef = session.getToolDefinition("eval");
+		const stopped = toolCard(
+			"schedule_wakeup",
+			wake,
+			"stopped",
+			{
+				details: { action: "stopped", reason: "deploy finished", ignoredFields: ["\u001b[31mfoo\u001b[0m", "bar\u0007"] },
+				content: [{ type: "text", text: "received" }],
+			},
+			{ stop: true, reason: "deploy finished" },
+		);
+		const lines = (transcript(host, [evalCard(evalDef, "a"), stopped]).project()[0] as Grouped).render(80);
+		const rendered = lines.join("\n");
+		expect(rendered).toContain("ignored foo, bar");
+		expect(rendered).not.toContain("\u001b");
+		expect(rendered).not.toContain("\u0007");
+	});
 });
 
 describe("default control grouping", () => {
