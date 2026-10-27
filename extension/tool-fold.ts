@@ -52,8 +52,53 @@ const COMPACT_TOOLS = new Set([
 	"lsp_prepare_rename",
 	"lsp_rename",
 ]);
+/** Ordinary thread receipts: summarized inside a run, never given renderer slots. */
+const THREAD_TOOLS = new Set([
+	"thread_create",
+	"thread_list",
+	"thread_read",
+	"thread_send",
+	"thread_interrupt",
+	"thread_handoff",
+	"thread_rename",
+	"thread_set_model",
+	"thread_set_reasoning",
+	"thread_bind",
+	"thread_unbind",
+	"thread_rebind",
+	"thread_bindings",
+	"thread_report",
+	"thread_outbox",
+	"thread_outbox_ack",
+]);
+const THREAD_DELIVERIES = new Set(["steered", "started", "queued", "queued_offline"]);
+const THREAD_REPORT_KINDS = new Set(["milestone", "report", "completion"]);
+
 /** Audited default-rendered controls: summarized only inside a run, never given renderer slots. */
-const PROJECTION_TOOLS = new Set(["kill_bash", "monitor", "schedule_wakeup", "schedule_prompt", "workflow", "workpool"]);
+const PROJECTION_TOOLS = new Set([
+	"kill_bash",
+	"monitor",
+	"schedule_wakeup",
+	"schedule_prompt",
+	"workflow",
+	"workpool",
+	"thread_create",
+	"thread_list",
+	"thread_read",
+	"thread_send",
+	"thread_interrupt",
+	"thread_handoff",
+	"thread_rename",
+	"thread_set_model",
+	"thread_set_reasoning",
+	"thread_bind",
+	"thread_unbind",
+	"thread_rebind",
+	"thread_bindings",
+	"thread_report",
+	"thread_outbox",
+	"thread_outbox_ack",
+]);
 const WORKFLOW_ACTIONS = new Set(["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend"]);
 const WORKFLOW_KINDS = new Set(["started", "attached", "snapshot", "waited", "detached", "cancelled", "retried", "sent", "amended"]);
 const RUN_STATUSES = new Set(["pending", "running", "paused", "completed"]);
@@ -642,7 +687,165 @@ function workpoolLine(args: unknown, result: unknown): ProjectionLine | undefine
 	};
 }
 
+/** An ordinary receipt requires a settled ok result, a complete source and no error note. */
+function threadPayload(result: unknown): { payload?: Record<string, unknown>; pending: boolean } | undefined {
+	if (!result) return { pending: true };
+	const details = isRecord(result) ? result.details : undefined;
+	if (!isRecord(details) || !isRecord(details.result)) return undefined;
+	const payload = details.result;
+	if (payload.kind !== "ok") return undefined;
+	if (payload.source_incomplete === true || details.source_incomplete === true) return undefined;
+	const note = payload.error_note ?? details.error_note;
+	if (note !== undefined && note !== null && note !== "") return undefined;
+	return { payload, pending: false };
+}
+
+function threadAddress(request: Record<string, unknown>, payload: Record<string, unknown> | undefined): string | undefined {
+	return (
+		nonEmptyString(request.thread) ??
+		nonEmptyString(request.thread_id) ??
+		nonEmptyString(payload?.thread_id)
+	);
+}
+
+function bindingAddress(request: Record<string, unknown>, payload: Record<string, unknown> | undefined): string | undefined {
+	const binding = isRecord(payload?.binding) ? payload.binding : undefined;
+	return (
+		nonEmptyString(request.binding_id) ??
+		nonEmptyString(payload?.binding_id) ??
+		nonEmptyString(binding?.binding_id)
+	);
+}
+
+function threadDelivery(payload: Record<string, unknown> | undefined): string | undefined {
+	const delivery = isRecord(payload?.delivery) ? payload.delivery : undefined;
+	const kind = nonEmptyString(delivery?.kind);
+	return kind !== undefined && THREAD_DELIVERIES.has(kind) ? kind : undefined;
+}
+
+/** Replies from the plan's exact result fields; reply tokens are never read. */
+function threadLine(tool: string, args: unknown, result: unknown): ProjectionLine | undefined {
+	const request = isRecord(args) ? args : {};
+	const state = threadPayload(result);
+	if (!state) return undefined;
+	const payload = state.payload;
+	const status = state.pending ? "call" : "complete";
+	switch (tool) {
+		case "thread_create": {
+			const name = nonEmptyString(request.name);
+			const thread = isRecord(payload?.thread) ? payload.thread : undefined;
+			const id = nonEmptyString(payload?.thread_id) ?? nonEmptyString(thread?.thread_id);
+			if (!name && !id) return undefined;
+			const head = name ?? id;
+			return { text: `thread_create ${head}${name && id ? ` · ${id}` : ""}`, status };
+		}
+		case "thread_list": {
+			const scope = request.all_scope === true ? " all" : "";
+			if (!payload) return { text: `thread_list${scope}`, status };
+			const threads = payload.threads;
+			if (!Array.isArray(threads)) return undefined;
+			return { text: `thread_list ${threads.length} thread${threads.length === 1 ? "" : "s"}`, status };
+		}
+		case "thread_read": {
+			const target = threadAddress(request, payload);
+			return target ? { text: `thread_read ${target}`, status } : undefined;
+		}
+		case "thread_send":
+		case "thread_handoff": {
+			const target = threadAddress(request, payload);
+			if (!target) return undefined;
+			const summary = nonEmptyString(request.summary) ?? nonEmptyString(payload?.summary);
+			if (!payload) return { text: `${tool} ${target}${summary ? ` · ${summary}` : ""}`, status };
+			const delivery = threadDelivery(payload);
+			if (!delivery) return undefined;
+			return { text: `${tool} ${target} ${delivery}${summary ? ` · ${summary}` : ""}`, status: delivery };
+		}
+		case "thread_interrupt": {
+			const target = threadAddress(request, payload);
+			if (!target) return undefined;
+			const turn = nonEmptyString(request.turn_id) ?? nonEmptyString(payload?.turn_id);
+			return { text: `thread_interrupt ${target}${turn ? ` turn ${turn}` : ""}`, status };
+		}
+		case "thread_rename": {
+			const target = threadAddress(request, payload);
+			const name = nonEmptyString(request.name) ?? nonEmptyString(payload?.name);
+			return target && name ? { text: `thread_rename ${target} to ${name}`, status } : undefined;
+		}
+		case "thread_set_model": {
+			const target = threadAddress(request, payload);
+			const model = nonEmptyString(request.model) ?? nonEmptyString(payload?.model);
+			const provider = nonEmptyString(request.provider) ?? nonEmptyString(payload?.provider);
+			if (!target || !model) return undefined;
+			return { text: `thread_set_model ${target} ${provider ? `${provider}/` : ""}${model}`, status };
+		}
+		case "thread_set_reasoning": {
+			const target = threadAddress(request, payload);
+			const level = nonEmptyString(request.level) ?? nonEmptyString(payload?.level);
+			return target && level ? { text: `thread_set_reasoning ${target} ${level}`, status } : undefined;
+		}
+		case "thread_bind": {
+			const binding = bindingAddress(request, payload);
+			const platform = nonEmptyString(request.platform);
+			const chat = nonEmptyString(request.chat_id);
+			const target = platform && chat ? `${platform}/${chat}` : binding;
+			if (!target) return undefined;
+			const suffix = binding && binding !== target ? ` · ${binding}` : "";
+			return { text: `thread_bind ${target}${suffix}`, status };
+		}
+		case "thread_unbind": {
+			const binding = bindingAddress(request, payload);
+			return binding ? { text: `thread_unbind ${binding}`, status } : undefined;
+		}
+		case "thread_rebind": {
+			const binding = bindingAddress(request, payload);
+			const session = nonEmptyString(request.session) ?? nonEmptyString(payload?.session_durable_id);
+			return binding && session ? { text: `thread_rebind ${binding} to ${session}`, status } : undefined;
+		}
+		case "thread_bindings": {
+			const session = nonEmptyString(request.session);
+			const platform = nonEmptyString(request.platform);
+			const chat = nonEmptyString(request.chat_id);
+			const bindingStatus = nonEmptyString(request.status);
+			const filter = session
+				? ` session ${session}`
+				: platform && chat
+					? ` ${platform}/${chat}`
+					: bindingStatus
+						? ` status ${bindingStatus}`
+						: "";
+			if (!payload) return { text: `thread_bindings${filter}`, status };
+			const bindings = payload.bindings;
+			if (!Array.isArray(bindings)) return undefined;
+			return {
+				text: `thread_bindings ${bindings.length} binding${bindings.length === 1 ? "" : "s"}${filter ? ` ·${filter}` : ""}`,
+				status,
+			};
+		}
+		case "thread_report": {
+			const kind = payload
+				? nonEmptyString(payload.report_kind) ?? nonEmptyString(request.kind)
+				: nonEmptyString(request.kind);
+			if (!kind || !THREAD_REPORT_KINDS.has(kind)) return undefined;
+			const binding = bindingAddress(request, payload);
+			return { text: `thread_report ${kind}${binding ? ` ${binding}` : ""}`, status };
+		}
+		case "thread_outbox": {
+			const binding = bindingAddress(request, payload);
+			return binding ? { text: `thread_outbox ${binding}`, status } : undefined;
+		}
+		case "thread_outbox_ack": {
+			const binding = bindingAddress(request, payload);
+			const cursor = request.cursor ?? payload?.cursor;
+			if (!binding || !Number.isInteger(cursor)) return undefined;
+			return { text: `thread_outbox_ack ${binding} · cursor ${String(cursor)}`, status };
+		}
+		default:
+			return undefined;
+	}
+}
+
 function projectionLine(tool: string, args: unknown, result: unknown): ProjectionLine | undefined {
+	if (THREAD_TOOLS.has(tool)) return threadLine(tool, args, result);
 	switch (tool) {
 		case "kill_bash":
 			return killBashLine(args, result);

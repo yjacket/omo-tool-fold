@@ -1269,6 +1269,345 @@ describe("default control grouping", () => {
 	});
 });
 
+describe("thread grouping", () => {
+	type ThreadFixture = {
+		name: string;
+		args: Record<string, unknown>;
+		payload: Record<string, unknown>;
+		callText: string;
+		resultText: string;
+	};
+	const fixtures: ThreadFixture[] = [
+		{
+			name: "thread_create",
+			args: { name: "worker" },
+			payload: { thread_id: "thr_1", thread: { thread_id: "thr_1", name: "worker" } },
+			callText: "thread_create worker",
+			resultText: "thread_create worker · thr_1",
+		},
+		{
+			name: "thread_list",
+			args: {},
+			payload: { threads: [{ thread_id: "thr_1" }, { thread_id: "thr_2" }] },
+			callText: "thread_list",
+			resultText: "thread_list 2 threads",
+		},
+		{
+			name: "thread_read",
+			args: { thread: "thr_1" },
+			payload: { thread_id: "thr_1" },
+			callText: "thread_read thr_1",
+			resultText: "thread_read thr_1",
+		},
+		{
+			name: "thread_send",
+			args: { thread: "thr_1", message: "go", summary: "deploy" },
+			payload: { thread_id: "thr_1", delivery: { kind: "queued_offline" } },
+			callText: "thread_send thr_1 · deploy",
+			resultText: "thread_send thr_1 queued_offline · deploy",
+		},
+		{
+			name: "thread_interrupt",
+			args: { thread: "thr_1", turn_id: "turn_7" },
+			payload: { thread_id: "thr_1", interrupted: true },
+			callText: "thread_interrupt thr_1 turn turn_7",
+			resultText: "thread_interrupt thr_1 turn turn_7",
+		},
+		{
+			name: "thread_handoff",
+			args: { thread: "thr_2", message: "continue", summary: "resume" },
+			payload: { thread_id: "thr_2", delivery: { kind: "started" } },
+			callText: "thread_handoff thr_2 · resume",
+			resultText: "thread_handoff thr_2 started · resume",
+		},
+		{
+			name: "thread_rename",
+			args: { thread: "thr_1", name: "renamed" },
+			payload: { thread_id: "thr_1", name: "renamed" },
+			callText: "thread_rename thr_1 to renamed",
+			resultText: "thread_rename thr_1 to renamed",
+		},
+		{
+			name: "thread_set_model",
+			args: { thread: "thr_1", provider: "anthropic", model: "claude" },
+			payload: { thread_id: "thr_1", provider: "anthropic", model: "claude" },
+			callText: "thread_set_model thr_1 anthropic/claude",
+			resultText: "thread_set_model thr_1 anthropic/claude",
+		},
+		{
+			name: "thread_set_reasoning",
+			args: { thread: "thr_1", level: "high" },
+			payload: { thread_id: "thr_1", level: "high" },
+			callText: "thread_set_reasoning thr_1 high",
+			resultText: "thread_set_reasoning thr_1 high",
+		},
+		{
+			name: "thread_bind",
+			args: { platform: "discord", account_id: "acct", chat_id: "chat_1" },
+			payload: { binding_id: "bind_1" },
+			callText: "thread_bind discord/chat_1",
+			resultText: "thread_bind discord/chat_1 · bind_1",
+		},
+		{
+			name: "thread_unbind",
+			args: { binding_id: "bind_1", expected_revision: 1 },
+			payload: { binding_id: "bind_1" },
+			callText: "thread_unbind bind_1",
+			resultText: "thread_unbind bind_1",
+		},
+		{
+			name: "thread_rebind",
+			args: { binding_id: "bind_1", expected_revision: 1, session: "thr_2" },
+			payload: { binding_id: "bind_1", session_durable_id: "thr_2" },
+			callText: "thread_rebind bind_1 to thr_2",
+			resultText: "thread_rebind bind_1 to thr_2",
+		},
+		{
+			name: "thread_bindings",
+			args: { session: "thr_1" },
+			payload: { bindings: [{ binding_id: "bind_1" }] },
+			callText: "thread_bindings session thr_1",
+			resultText: "thread_bindings 1 binding · session thr_1",
+		},
+		{
+			name: "thread_report",
+			args: { kind: "milestone", binding_id: "bind_1", text: "50%" },
+			payload: { binding_id: "bind_1", report_kind: "milestone" },
+			callText: "thread_report milestone bind_1",
+			resultText: "thread_report milestone bind_1",
+		},
+		{
+			name: "thread_outbox",
+			args: { binding_id: "bind_1" },
+			payload: { binding_id: "bind_1", items: [] },
+			callText: "thread_outbox bind_1",
+			resultText: "thread_outbox bind_1",
+		},
+		{
+			name: "thread_outbox_ack",
+			args: { binding_id: "bind_1", cursor: 4 },
+			payload: { binding_id: "bind_1", cursor: 4 },
+			callText: "thread_outbox_ack bind_1 · cursor 4",
+			resultText: "thread_outbox_ack bind_1 · cursor 4",
+		},
+	];
+	const receipt = (payload: Record<string, unknown>) => ({
+		details: { result: { kind: "ok", ...payload } },
+		content: [{ type: "text", text: "original thread receipt" }],
+	});
+	const installThreads = (host: ReturnType<typeof makeHost>) => {
+		const defs: Record<string, { execute: ReturnType<typeof mock> }> = {};
+		for (const { name } of fixtures) {
+			const definition = { execute: mock(() => undefined) };
+			host.defs[name] = definition;
+			defs[name] = definition;
+		}
+		return defs;
+	};
+
+	test("all sixteen eligible thread receipts join ordered groups and thread_answer never does", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const defs = installThreads(host);
+		host.defs.thread_answer = { execute: mock(() => undefined) };
+		const definitions: Record<string, Record<string, unknown>> = {};
+		for (const { name } of fixtures) {
+			const def = session.getToolDefinition(name) as Record<string, unknown>;
+			definitions[name] = def;
+			expect(Object.hasOwn(def, "renderCall")).toBe(false);
+			expect(Object.hasOwn(def, "renderResult")).toBe(false);
+		}
+		const cards = fixtures.map(({ name, args, payload }) => toolCard(name, definitions[name], name, receipt(payload), args));
+		const answer = toolCard(
+			"thread_answer",
+			session.getToolDefinition("thread_answer"),
+			"answer",
+			receipt({ binding_id: "bind_1", cursor: 5, reply_token: "rt_secret" }),
+			{ binding_id: "bind_1", reply_token: "rt_secret", answer: "yes" },
+		);
+		const tail = fixtures.slice(0, 2).map(({ name, args, payload }) =>
+			toolCard(name, definitions[name], `${name}-tail`, receipt(payload), args),
+		);
+		const out = transcript(host, [...cards, answer, ...tail]).project();
+		expect(out.length).toBe(3);
+		const first = (out[0] as Grouped).render(80);
+		expect(first[1]).toContain("Running 16 tools");
+		expect(first.slice(2).map((line) => line.trim())).toEqual(
+			fixtures.map(({ resultText }, index) => `${index === 0 ? "└ " : ""}${resultText}`),
+		);
+		expect(out[1]).toBe(answer);
+		expect((out[2] as Grouped).render(80)[1]).toContain("Ran 2 tools");
+		for (const def of Object.values(defs)) expect(def.execute.mock.calls.length).toBe(0);
+	});
+
+	test("pending thread calls identify their target and later settle in the same order", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		installThreads(host);
+		const pending = fixtures.map(({ name, args }) =>
+			toolCard(name, session.getToolDefinition(name), `${name}-pending`, undefined, args),
+		);
+		const lines = (transcript(host, pending).project()[0] as Grouped).render(80);
+		expect(lines[1]).toContain("Running 16 tools");
+		expect(lines.slice(2).map((line) => line.trim())).toEqual(
+			fixtures.map(({ callText }, index) => `${index === 0 ? "└ " : ""}${callText}`),
+		);
+	});
+
+	test("queued_offline stays a delivery label, never delivered", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		installThreads(host);
+		const def = session.getToolDefinition("thread_send");
+		const cards = ["queued_offline", "started", "steered", "queued"].map((kind) =>
+			toolCard("thread_send", def, kind, receipt({ thread_id: "thr_1", delivery: { kind } }), { thread: "thr_1", message: "go" }),
+		);
+		const rendered = (transcript(host, cards).project()[0] as Grouped).render(80).join("\n");
+		expect(rendered).toContain("thread_send thr_1 queued_offline");
+		expect(rendered).toContain("thread_send thr_1 started");
+		expect(rendered).toContain("thread_send thr_1 steered");
+		expect(rendered).toContain("thread_send thr_1 queued");
+		expect(rendered).not.toContain("delivered");
+	});
+
+	test("error, incomplete and decision receipts stay native", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		installThreads(host);
+		host.defs.thread_answer = { execute: mock(() => undefined) };
+		const send = session.getToolDefinition("thread_send");
+		const report = session.getToolDefinition("thread_report");
+		const cases: { label: string; tool: string; definition: unknown; args: unknown; result: unknown }[] = [
+			{
+				label: "error",
+				tool: "thread_send",
+				definition: send,
+				args: { thread: "thr_1", message: "x" },
+				result: { details: { result: { kind: "error", error: { code: "invalid_arguments" } } } },
+			},
+			{
+				label: "unknown-kind",
+				tool: "thread_send",
+				definition: send,
+				args: { thread: "thr_1", message: "x" },
+				result: { details: { result: { kind: "brand-new" } } },
+			},
+			{
+				label: "missing-kind",
+				tool: "thread_send",
+				definition: send,
+				args: { thread: "thr_1", message: "x" },
+				result: { details: { result: { thread_id: "thr_1" } } },
+			},
+			{
+				label: "source-incomplete",
+				tool: "thread_read",
+				definition: session.getToolDefinition("thread_read"),
+				args: { thread: "thr_1" },
+				result: receipt({ thread_id: "thr_1", source_incomplete: true }),
+			},
+			{
+				label: "error-note",
+				tool: "thread_read",
+				definition: session.getToolDefinition("thread_read"),
+				args: { thread: "thr_1" },
+				result: receipt({ thread_id: "thr_1", error_note: "host moved" }),
+			},
+			{
+				label: "unknown-delivery",
+				tool: "thread_send",
+				definition: send,
+				args: { thread: "thr_1", message: "x" },
+				result: receipt({ thread_id: "thr_1", delivery: { kind: "teleported" } }),
+			},
+			{
+				label: "missing-delivery",
+				tool: "thread_handoff",
+				definition: session.getToolDefinition("thread_handoff"),
+				args: { thread: "thr_2", message: "x" },
+				result: receipt({ thread_id: "thr_2" }),
+			},
+			{
+				label: "question-pending",
+				tool: "thread_report",
+				definition: report,
+				args: { kind: "question", binding_id: "bind_1", text: "choose" },
+				result: undefined,
+			},
+			{
+				label: "question-settled",
+				tool: "thread_report",
+				definition: report,
+				args: { kind: "question", binding_id: "bind_1", text: "choose" },
+				result: receipt({ binding_id: "bind_1", report_kind: "question", reply_token: "rt_secret" }),
+			},
+			{
+				label: "missing-report-kind",
+				tool: "thread_report",
+				definition: report,
+				args: { binding_id: "bind_1", text: "choose" },
+				result: receipt({ binding_id: "bind_1" }),
+			},
+			{
+				label: "unknown-report-kind",
+				tool: "thread_report",
+				definition: report,
+				args: { kind: "brand-new", binding_id: "bind_1", text: "choose" },
+				result: receipt({ binding_id: "bind_1" }),
+			},
+			{
+				label: "answer-pending",
+				tool: "thread_answer",
+				definition: session.getToolDefinition("thread_answer"),
+				args: { binding_id: "bind_1", reply_token: "rt_secret", answer: "yes" },
+				result: undefined,
+			},
+			{
+				label: "answer-settled",
+				tool: "thread_answer",
+				definition: session.getToolDefinition("thread_answer"),
+				args: { binding_id: "bind_1", reply_token: "rt_secret", answer: "yes" },
+				result: receipt({ binding_id: "bind_1", cursor: 5 }),
+			},
+		];
+		for (const { label, tool, definition, args, result } of cases) {
+			const unsafe = toolCard(tool, definition, label, result, args);
+			const out = transcript(host, [evalCard(evalDef, `a-${label}`), unsafe, evalCard(evalDef, `b-${label}`), evalCard(evalDef, `c-${label}`)]).project();
+			expect(out.length).toBe(3);
+			expect(out[1]).toBe(unsafe);
+			expect((out[2] as Grouped).render(80)[1]).toBe("• Ran 2 evals");
+		}
+	});
+
+	test("thread rows never expose reply tokens or raw terminal controls", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		installThreads(host);
+		const def = session.getToolDefinition("thread_send");
+		const cards = [
+			toolCard(
+				"thread_send",
+				def,
+				"escape",
+				receipt({ thread_id: "thr_1", delivery: { kind: "queued_offline" }, reply_token: "rt_secret" }),
+				{ thread: "thr_1\u001b[31m", message: "\u001b]0;pwned\u0007body", summary: "line one\nline two\u0007" },
+			),
+			toolCard(
+				"thread_send",
+				def,
+				"clean",
+				receipt({ thread_id: "thr_2", delivery: { kind: "started" } }),
+				{ thread: "thr_2", message: "go" },
+			),
+		];
+		const rendered = (transcript(host, cards).project()[0] as Grouped).render(80).join("\n");
+		expect(rendered).toContain("thread_send thr_1 queued_offline · line one line two");
+		expect(rendered).not.toContain("rt_secret");
+		for (const line of rendered.split("\n")) expect(line).not.toMatch(/\p{Cc}/u);
+	});
+});
+
 describe("tool-fold history window", () => {
 	test("expansion resets only the non-owning display and preserves native return and source children", async () => {
 		const host = makeHost();
