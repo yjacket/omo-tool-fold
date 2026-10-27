@@ -72,7 +72,7 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 
 이것이 유한한 범위입니다. 관찰된 카탈로그 79개 중 61개가 조건부 대상(렌더러 39개 + 묶음 전용 22개)이고 18개는 원래 표시를 유지합니다. 앞으로 OMO 업데이트로 추가되는 도구를 모르는 채로 접지 않으며, 와일드카드나 접두사로 이름을 받지 않습니다.
 
-결과가 오류이면(`result.isError`, `details.isError` 또는 렌더 컨텍스트의 `isError`) 원래 전체 출력을 보여 줍니다. 이미지 같은 비텍스트 내용, 실패/취소 상태, 일부 헝크가 실패한 apply_patch, 알 수 없는 필수 모양도 원래대로 남습니다.
+결과가 오류이면(`result.isError`, `details.isError` 또는 렌더 컨텍스트의 `isError`) 원래 전체 출력을 보여 줍니다. 이미지 같은 비텍스트 내용, 실패/취소 상태, 일부 헝크가 실패한 apply_patch, 알 수 없는 필수 모양도 원래대로 남습니다. task_output의 `details.snapshot.status`가 실패, 취소, 알 수 없는 상태일 때도 원래 출력을 유지합니다.
 
 ## 끝난 사고 줄
 
@@ -88,7 +88,7 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 - 원래 표시로 남는 도구(read, grep, find, ls, ask_user_question, 미디어, MCP 스텁 등)가 나오면 묶음이 끊깁니다.
 - 백그라운드 셸 영수증(details.background와 bash_id)은 `background <id>`로 표시됩니다. 작업이 시작되었다는 뜻이며 끝났다는 뜻이 아닙니다.
 - Ctrl+O를 누르거나 머리 줄을 클릭하면 머리 줄 아래에 원래 상자들이 나옵니다. 한 번 더 하면 다시 접힙니다. 이 동작은 바뀌지 않았습니다.
-- 아직 실행 중인 eval이 있으면 머리 줄에 스피너가 돌고 `Running N evals`(섞인 묶음은 `Running N tools · ...`)로 바뀝니다. 그 eval 줄에는 `py running 데이터 분석`처럼 상태 단어가 나옵니다.
+- 아직 실행 중인 구성원이 있거나 아직 끝나지 않은 영수증을 보고하면(armed 상태의 monitor, 스냅샷이 완료되지 않은 started/detached workflow 실행, queued/started/queued_offline 스레드 전달) 머리 줄에 스피너가 돌고 `Running N evals`(섞인 묶음은 `Running N tools · ...`)로 바뀝니다. 모두 정리된 세션이라도 이런 영수증 때문에 `Running`이 남을 수 있습니다. 그 줄에는 `py running 데이터 분석`이나 `monitor armed <id> ...`처럼 상태 단어가 나옵니다. 백그라운드 셸 실행은 완료로 보지 않습니다. 그 줄은 `background <id>`로 표시되며, 실행을 시작했다는 뜻이지 완료를 뜻하지 않습니다.
 - 줄 수 제한은 없습니다.
 
 ## 숨기는 알림

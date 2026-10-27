@@ -72,7 +72,7 @@ If you installed with the old copy scripts, delete `~/.omo/agent/extensions/tool
 
 That is the finite scope: of the 79 names in the observed catalog, 61 are conditionally eligible (39 renderer-backed plus 22 projection-only) and 18 stay native. A tool added by a future OMO update is never folded blindly, and no name is admitted by wildcard or prefix.
 
-Any error result (`result.isError`, `details.isError`, or the render context's `isError`) shows the original full output. Non-text content such as images, failed or cancelled states, partial apply_patch results and unknown required shapes also stay native.
+Any error result (`result.isError`, `details.isError`, or the render context's `isError`) shows the original full output. Non-text content such as images, failed or cancelled states, partial apply_patch results and unknown required shapes also stay native. A failed, cancelled or unknown task status (`task_output` `details.snapshot.status`) also keeps the original output.
 
 ## Finished thinking
 
@@ -88,7 +88,7 @@ Any error result (`result.isError`, `details.isError`, or the render context's `
 - A tool that stays native (read, grep, find, ls, ask_user_question, media, MCP stubs, ...) breaks it.
 - A returned background-shell receipt (details.background plus bash_id) is labeled `background <id>`; it means the job was launched, not that it finished.
 - Ctrl+O, or a click on the header, shows the original boxes under the header. Do it again to fold them back; this behavior is unchanged.
-- While any member is still running, the header shows a spinner and reads `Running N evals` (or `Running N tools · ...`). That member's line shows its state word, for example `py running 데이터 분석`.
+- While any member is still running, or reports a receipt that has not finished (an armed monitor, a started or detached workflow run whose snapshot is not complete, or a queued, started or queued_offline thread delivery), the header shows a spinner and reads `Running N evals` (or `Running N tools · ...`). A fully settled session can still show `Running` for those receipts. That member's line shows its state word, for example `py running 데이터 분석` or `monitor armed <id> ...`. A background shell launch is not one of these completions: its row reads `background <id>` and records a launch, not a completion.
 - The list has no line cap.
 
 ## Hidden notices
