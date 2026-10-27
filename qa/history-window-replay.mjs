@@ -1,9 +1,13 @@
+// allow: SIZE_OK - the task owns this one replay file; its PTY, frame, browser and
+// cleanup lifecycle must stay in one process and cannot be split into new files here.
 // Run with Bun >= 1.4. No prompts, installed-extension changes, or user sessions.
 // SENPI_DIST, QA_ROOT (scratch parent), EVIDENCE_DIR, QA_NO_FOLD=1,
-// QA_BROWSER_PATH, QA_BROWSER_SKILL, and QA_XTERM_ROOT are optional overrides.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// QA_BROWSER_PATH, QA_BROWSER_SKILL, QA_XTERM_ROOT are optional overrides.
+// QA_SCENARIO=comprehensive-grouping, QA_COLS=80|150, QA_ROWS=45 and
+// QA_THEME=dark|<absolute grok-day-focus.json> select the deterministic matrix.
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const args = process.argv.slice(2);
@@ -12,14 +16,54 @@ if (args.length !== 2 || args[0] !== "--provider" || !["claude", "codex"].includ
 }
 const provider = args[1];
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = resolve(process.env.SENPI_DIST ?? join(homedir(), ".omo/agent/runtime/bb7a5bb46b656c02-7e186e28b781/dist"));
+const RUNTIME_ROOT = join(homedir(), ".omo/agent/runtime");
+
+// The planning-time runtime directory was removed. Resolve the newest installed
+// runtime that actually ships the engine, unless SENPI_DIST explicitly selects one.
+function defaultDist() {
+  if (!existsSync(RUNTIME_ROOT)) return join(RUNTIME_ROOT, "missing/dist");
+  const candidates = readdirSync(RUNTIME_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(RUNTIME_ROOT, entry.name, "dist"))
+    .filter((dist) => existsSync(join(dist, "bundle/cli.js")))
+    .map((dist) => ({ dist, modified: Bun.file(join(dist, "bundle/cli.js")).lastModified }))
+    .sort((left, right) => right.modified - left.modified);
+  return candidates[0]?.dist ?? join(RUNTIME_ROOT, "missing/dist");
+}
+const DIST = resolve(process.env.SENPI_DIST ?? defaultDist());
 const CLI = join(DIST, "bundle/cli.js");
 if (!existsSync(CLI)) throw new Error(`Missing engine: ${CLI}; set SENPI_DIST`);
+const PI_TUI_DIST = process.env.PI_TUI_DIST;
+const comprehensive = process.env.QA_SCENARIO === "comprehensive-grouping";
+if (process.env.QA_SCENARIO && !comprehensive) throw new Error(`Unknown QA_SCENARIO: ${process.env.QA_SCENARIO}`);
+
+function dimension(name, fallback, allowed) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (!/^\d+$/.test(raw) || !allowed.includes(Number(raw))) {
+    throw new Error(`${name}=${raw} is invalid; expected ${allowed.join("|")}`);
+  }
+  return Number(raw);
+}
+const COLS = comprehensive ? dimension("QA_COLS", 150, [80, 150]) : 150;
+const ROWS = comprehensive ? dimension("QA_ROWS", 45, [45]) : 45;
+const themeArg = comprehensive ? (process.env.QA_THEME ?? "dark") : "grok-day";
+if (themeArg !== "dark" && !existsSync(resolve(themeArg))) throw new Error(`QA_THEME file not found: ${themeArg}`);
+const lightRun = comprehensive && themeArg !== "dark";
+
 const scratchParent = resolve(process.env.QA_ROOT ?? tmpdir());
+const EVIDENCE = resolve(process.env.EVIDENCE_DIR ?? join(REPO, ".omo/evidence/history-window", `${provider}${process.env.QA_NO_FOLD === "1" ? "-baseline" : ""}`));
+// Refuse a stale comprehensive destination before creating scratch or writing anything.
+if (comprehensive && existsSync(EVIDENCE)) {
+  const entries = readdirSync(EVIDENCE);
+  if (entries.length > 0) throw new Error(`EVIDENCE_DIR is not empty: ${EVIDENCE}; use a fresh attempt suffix`);
+}
+if (EVIDENCE === scratchParent || EVIDENCE.startsWith(`${resolve(scratchParent)}/`) || EVIDENCE.startsWith(`${resolve(scratchParent)}\\`)) {
+  throw new Error("EVIDENCE_DIR must be outside QA_ROOT scratch");
+}
 mkdirSync(scratchParent, { recursive: true });
 // Always own a unique child, even when QA_ROOT points to a shared scratch parent.
 const RUN_TMP = mkdtempSync(join(scratchParent, "history-window-"));
-const EVIDENCE = resolve(process.env.EVIDENCE_DIR ?? join(REPO, ".omo/evidence/history-window", `${provider}${process.env.QA_NO_FOLD === "1" ? "-baseline" : ""}`));
 if (EVIDENCE === RUN_TMP || EVIDENCE.startsWith(`${RUN_TMP}/`) || EVIDENCE.startsWith(`${RUN_TMP}\\`)) {
   rmSync(RUN_TMP, { recursive: true, force: true });
   throw new Error("EVIDENCE_DIR must be outside this run's temporary directory");
@@ -31,20 +75,25 @@ process.env.TMP = RUN_TMP;
 process.env.TEMP = RUN_TMP;
 process.env.NODE_COMPILE_CACHE = join(RUN_TMP, "node-cache");
 process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = join(RUN_TMP, "bun-cache");
-const COLS = 150;
-const ROWS = 45;
 const TIMEOUT = 90000;
 const AGENT = join(RUN_TMP, "agent");
 const SESSION = join(RUN_TMP, "sessions/replay.jsonl");
 const QA_TOOL = join(RUN_TMP, "qa-tools.ts");
+const PROVENANCE = join(RUN_TMP, "definition-provenance.json");
+const DEFINITIONS = join(RUN_TMP, "definition-shapes.json");
+const EXECUTE_COUNTER = join(RUN_TMP, "execute-calls.log");
+const MOUSE_LOG = join(RUN_TMP, "mouse-events.jsonl");
 const noFold = process.env.QA_NO_FOLD === "1";
 const children = new Set();
 const cleanup = [];
-const report = { provider, noFold, dimensions: { cols: COLS, rows: ROWS }, historyLines: 100, runTmp: RUN_TMP, evidence: EVIDENCE, actions: [], captures: {}, cleanup };
+const report = { provider, noFold, scenario: comprehensive ? "comprehensive-grouping" : "history-window", dimensions: { cols: COLS, rows: ROWS }, historyLines: comprehensive ? 5000 : 100,
+  runtime: { dist: DIST, cli: CLI, piTuiDist: PI_TUI_DIST ?? null, version: null }, theme: themeArg, runTmp: RUN_TMP, evidence: EVIDENCE, actions: [], captures: {}, cleanup };
 let browser;
 let server;
+let page;
 let stream = Buffer.alloc(0);
 let failure;
+let frameSeq = 0;
 
 function fixture() {
   const t0 = Date.parse("2026-10-23T00:00:00Z");
@@ -95,23 +144,216 @@ function fixture() {
     .map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 }
 
+const NATIVE_TWO_SLOT = ["todo", "edit", "apply_patch", "powershell", "glob", "read", "grep", "find", "ls", "ask_user_question", "request_user_input"];
+const NATIVE_NO_SLOT = ["bash", "kill_bash", "schedule_wakeup", "schedule_prompt", "bash_input", "bash_resize", "generate_image", "show_html_page"];
+const NATIVE_CALL_ONLY = ["monitor"];
+const NATIVE_FIXTURES = [...NATIVE_TWO_SLOT, ...NATIVE_NO_SLOT, ...NATIVE_CALL_ONLY];
+const SYNTHETIC_NAMES = ["eval", "workflow", "workpool", "thread_send", "thread_report", "thread_answer", "mcp_context7_query-docs", "mcp_grep_app_searchGitHub"];
+const FIXTURE_TOOLS = [...NATIVE_FIXTURES, ...SYNTHETIC_NAMES];
+
+const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+const comprehensiveScenes = [
+  { name: "todo-mixed", markers: ["QA_ORIGINAL_COLLAPSED", "QA_TODO_ALPHA", "QA_TODO_BETA", "edit package.json", "QA_PATCH_MAIN", "QA_GLOB_MAIN"], foldMarkers: ["Ran "] },
+  { name: "native-defaults", markers: ["QA_KILL_RECEIPT", "QA_MONITOR_ARMED", "QA_WAKE_CLAMPED", "QA_SCHEDULE_NO_RUNNER", "QA_WORKFLOW_RUNNING", "QA_WORKPOOL_OPEN"], foldMarkers: ["Ran "] },
+  { name: "mcp", markers: ["QA_MCP_PREVIEW_MAIN", "QA_MCP_STUB_INACTIVE"], foldMarkers: ["Ran ", "QA_MCP_STUB_INACTIVE"] },
+  { name: "semantic-failures", markers: ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR", "QA_NATIVE_BASH_INPUT", "QA_NATIVE_BASH_RESIZE"], foldMarkers: ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR", "QA_NATIVE_BASH_INPUT", "QA_NATIVE_BASH_RESIZE"] },
+  { name: "decisions-media", markers: ["QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_NATIVE_HTML"], foldMarkers: ["QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_NATIVE_HTML"] },
+  { name: "receipts", markers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"], foldMarkers: ["Ran ", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"] },
+  { name: "native-exploration", markers: ["Explored", "Read a.ts", "Search QA_GREP_PATTERN in src", "List src"], foldMarkers: ["Explored", "Read a.ts", "Search QA_GREP_PATTERN in src"] },
+];
+const UNSAFE_MARKERS = ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR",
+  "QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_MCP_STUB_INACTIVE", "Explored", "Read a.ts", "Search QA_GREP_PATTERN in src"];
+const ALL_MARKERS = comprehensiveScenes.flatMap((scene) => scene.markers);
+
+function comprehensiveFixture() {
+  const t0 = Date.parse("2026-10-23T00:00:00Z");
+  const entries = [];
+  let parentId = null;
+  let toolCount = 0;
+  const add = (fields) => {
+    const id = (entries.length + 1).toString(16).padStart(8, "0");
+    entries.push({ ...fields, id, parentId, timestamp: new Date(t0 + entries.length * 1000).toISOString() });
+    parentId = id;
+  };
+  const at = () => t0 + entries.length * 1000;
+  const model = provider === "claude"
+    ? { api: "claude-sdk-oauth", provider: "anthropic-subscription", model: "claude-opus-5-5" }
+    : { api: "openai-codex-responses", provider: "chatgpt-subscription", model: "gpt-6.1-sol" };
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const assistant = (content, stopReason = "stop") => add({ type: "message", message: { role: "assistant", ...model, content, stopReason, usage, timestamp: at() } });
+  const thinking = (n) => ({
+    type: "thinking",
+    thinking: provider === "claude" ? `QA_THINKING_${n}` : "",
+    thinkingSignature: provider === "claude" ? "qa-signature" : JSON.stringify({
+      id: `rs_qa_${n}`, type: "reasoning", summary: [{ type: "summary_text", text: `QA_SIGNED_SUMMARY_${n}` }],
+    }),
+    startedAt: at(), endedAt: at() + 1,
+  });
+  const tool = (name, toolArgs, text, details, options = {}) => {
+    toolCount += 1;
+    const id = provider === "claude" ? `toolu_qa_${toolCount}` : `call_qa_${toolCount}|fc_qa_${toolCount}`;
+    assistant([thinking(toolCount), { type: "toolCall", id, name, arguments: toolArgs }], "toolUse");
+    const content = options.image
+      ? [{ type: "text", text }, { type: "image", data: PNG_1PX, mimeType: "image/png" }]
+      : [{ type: "text", text }];
+    add({ type: "message", message: { role: "toolResult", toolCallId: id, toolName: name, content, isError: options.isError === true,
+      timestamp: at(), ...(details === undefined ? {} : { details }) } });
+  };
+  add({ type: "model_change", provider: model.provider, modelId: model.model });
+  add({ type: "thinking_level_change", thinkingLevel: "low" });
+  add({ type: "message", message: { role: "user", content: [{ type: "text", text: "QA_COMPREHENSIVE_BEGIN" }], timestamp: at() } });
+
+  tool("eval", { language: "js", summary: "QA_EVAL_MIXED_SUMMARY", code: "/* QA_EVAL_MIXED */" }, "QA_EVAL_MIXED_OUTPUT",
+    { language: "js", summary: "QA_EVAL_MIXED_SUMMARY", cells: [{ index: 0, status: "complete", language: "js", summary: "QA_EVAL_MIXED_SUMMARY" }] });
+  tool("todo", { op: "init", list: [{ phase: "QA_PHASE_ALPHA", items: ["QA_TODO_ALPHA", "QA_TODO_BETA"] }] }, "QA_TODO_INIT_OUTPUT",
+    { op: "init", storage: "session", phases: [{ name: "QA_PHASE_ALPHA", tasks: [
+      { content: "QA_TODO_ALPHA", status: "in_progress" }, { content: "QA_TODO_BETA", status: "pending" }] }] });
+  tool("edit", { path: "package.json", edits: [{ oldText: '"version": "0.1.0"', newText: '"version": "0.1.1"' }] }, "QA_EDIT_MAIN",
+    { diff: '--- a/package.json\n+++ b/package.json\n@@\n-"version": "0.1.0"\n+"version": "0.1.1"', firstChangedLine: 3 });
+  tool("apply_patch", { patch: "*** Begin Patch\n*** Update File: a.ts\n@@\n-old\n+new\n*** End Patch" }, "QA_PATCH_MAIN", { files: [{ path: "a.ts", additions: 1, deletions: 1 }] });
+  tool("glob", { pattern: "qa/**/*.ts", path: "src" }, "QA_GLOB_MAIN", { pattern: "qa/**/*.ts", path: "src", matches: ["src/qa/a.ts"] });
+  assistant([{ type: "text", text: "QA_BREAK_1" }]);
+
+  tool("kill_bash", { bash_id: "bash_qa_old" }, "QA_KILL_RECEIPT killed=1", { bash_id: "bash_qa_old", killed: 1 });
+  tool("monitor", { description: "QA_MONITOR" }, "QA_MONITOR_ARMED", { monitor: true, monitor_id: "mon_qa", bash_id: "bash_qa" });
+  tool("schedule_wakeup", { delaySeconds: 1 }, "QA_WAKE_CLAMPED delay=60 clamped", { action: "scheduled", delaySeconds: 60, clamped: true });
+  tool("schedule_prompt", { prompt: "QA_SCHEDULE" }, "QA_SCHEDULE_NO_RUNNER", { action: "create", jobs: [{ id: "job_qa" }], runnerAvailable: false, inFlight: false });
+  tool("workflow", { action: "snapshot", run_id: "wf_qa_main" }, "QA_WORKFLOW_RUNNING", { kind: "snapshot", snapshot: { run_id: "wf_qa_main", status: "running" } });
+  tool("workpool", { op: "inspect", pool_id: "pool_qa" }, "QA_WORKPOOL_OPEN", { op: "inspect", pool: { pool_id: "pool_qa", name: "QA_POOL_MAIN", status: "open", items: [] } });
+  assistant([{ type: "text", text: "QA_BREAK_2" }]);
+
+  tool("mcp_context7_query-docs", { libraryId: "/qa/lib", query: "QA_MCP_QUERY_MAIN" }, "QA_MCP_PREVIEW_MAIN",
+    { server: "context7", tool: "query-docs", preview: "QA_MCP_PREVIEW_MAIN" });
+  tool("mcp_grep_app_searchGitHub", { query: "QA_STUB_QUERY" }, "QA_MCP_STUB_INACTIVE: server not configured", undefined);
+  assistant([{ type: "text", text: "QA_BREAK_3" }]);
+
+  tool("workflow", { action: "snapshot", run_id: "wf_qa_error" }, "QA_SEMANTIC_WORKFLOW_ERROR", { kind: "error", error: { code: "QA_WORKFLOW_FAILED" } });
+  tool("workpool", { op: "inspect", pool_id: "pool_qa_bad" }, "QA_SEMANTIC_WORKPOOL_CANCELLED", { op: "inspect", pool: { pool_id: "pool_qa_bad", status: "cancelled", items: [] } });
+  tool("thread_report", { kind: "question", binding_id: "bind_qa" }, "QA_SEMANTIC_THREAD_QUESTION", { result: { kind: "ok", binding_id: "bind_qa", report_kind: "question" } });
+  tool("thread_send", { thread_id: "thr_qa_bad", message: "QA" }, "QA_SEMANTIC_THREAD_ERROR", { result: { kind: "error", error: { code: "invalid_arguments" } } });
+  tool("bash_input", { bash_id: "bash_qa", input: "x" }, "QA_NATIVE_BASH_INPUT ignored-key", undefined);
+  tool("bash_resize", { bash_id: "bash_qa", cols: 80, rows: 20 }, "QA_NATIVE_BASH_RESIZE pipe-noop", undefined);
+  assistant([{ type: "text", text: "QA_BREAK_4" }]);
+
+  tool("ask_user_question", { questions: [{ question: "QA_DECISION_QUESTION", options: [{ label: "QA" }] }] }, "QA_DECISION_ANSWER",
+    { answers: [{ question: "QA_DECISION_QUESTION", answer: "QA_DECISION_ANSWER" }] });
+  tool("generate_image", { prompt: "QA_MEDIA_IMAGE_TITLE" }, "QA_MEDIA_IMAGE", undefined, { image: true });
+  tool("show_html_page", { html: "<h1>QA_NATIVE_HTML</h1>" }, "QA_NATIVE_HTML", undefined);
+  assistant([{ type: "text", text: "QA_BREAK_5" }]);
+
+  tool("bash", { command: "echo QA_BACKGROUND_RECEIPT", run_in_background: true }, "QA_BACKGROUND_RECEIPT bash_qa_bg",
+    { background: true, bash_id: "bash_qa_bg" });
+  tool("bash", { command: "echo QA_FOREGROUND_EXIT_0" }, "QA_FOREGROUND_EXIT_0", { exitCode: 0 });
+  tool("thread_send", { thread_id: "thr_qa_queue", message: "QA_QUEUED_OFFLINE" }, "QA_QUEUED_OFFLINE",
+    { result: { kind: "ok", thread_id: "thr_qa_queue", delivery: { kind: "queued_offline" } } });
+  tool("monitor", { human_input: true }, "QA_HUMAN_BOUNDARY", { monitor: true, monitor_id: "mon_human", bash_id: "bash_human" });
+  tool("schedule_prompt", { action: "cancel", job_id: "job_qa" }, "QA_IN_FLIGHT", { action: "cancel", jobs: [{ id: "job_qa" }], runnerAvailable: true, inFlight: true });
+  assistant([{ type: "text", text: "QA_BREAK_6" }]);
+
+  tool("read", { path: "src/a.ts" }, "QA_READ_FILE", undefined);
+  tool("grep", { pattern: "QA_GREP_PATTERN", path: "src" }, "QA_GREP_RESULT", undefined);
+  tool("find", { pattern: "*.ts", path: "src" }, "QA_FIND_RESULT", undefined);
+  tool("ls", { path: "src" }, "QA_LS_RESULT", undefined);
+  assistant([{ type: "text", text: "QA_COMPREHENSIVE_END" }]);
+  return {
+    text: `${[{ type: "session", version: 3, id: "00000000-0000-7000-8000-000000000b03", timestamp: new Date(t0).toISOString(), cwd: REPO }, ...entries]
+      .map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    toolCount,
+  };
+}
+
 // Observes, but never changes, the history window or projection. A private OSC marker
 // follows the engine's synchronous terminal writes for the exact frame under test.
 function qaExtension() {
+  const synthetic = comprehensive ? `
+  const recordExecute = () => appendFileSync(${JSON.stringify(EXECUTE_COUNTER)}, "execute\\n");
+  const throwExecute = () => { recordExecute(); throw new Error("QA_MUST_NOT_EXECUTE"); };
+  const preview = (result) => {
+    const text = (result?.content ?? []).filter((entry) => entry.type === "text" && typeof entry.text === "string").map((entry) => entry.text).join("\\n");
+    return result?.details?.preview ?? text ?? "";
+  };
+  const noSlot = (name, extra = {}) => ({ name, label: name, description: "Synthetic replay only; never executed.",
+    parameters: { type: "object", properties: {}, additionalProperties: true }, qaProvenance: "synthetic",
+    async execute() { throwExecute(); }, ...extra });
+  const definitions = {
+    eval: { name: "eval", label: "eval", description: "Synthetic replay only; never executed.",
+      parameters: { type: "object", properties: {}, additionalProperties: true }, qaProvenance: "synthetic",
+      async execute() { throwExecute(); },
+      renderCall(toolArgs) { return new Text(String(toolArgs?.summary ?? "QA_CALL"), 0, 0); },
+      renderResult(result, renderOptions, _theme, context) {
+        const text = (result.content ?? []).filter((entry) => entry.type === "text").map((entry) => entry.text).join("\\n");
+        if (context?.isError || result.isError || renderOptions.expanded) return new Text(text, 0, 0);
+        return new Text("QA_ORIGINAL_COLLAPSED", 0, 0);
+      } },
+    workflow: noSlot("workflow"),
+    workpool: noSlot("workpool"),
+    thread_send: noSlot("thread_send"),
+    thread_report: noSlot("thread_report"),
+    thread_answer: noSlot("thread_answer"),
+    "mcp_context7_query-docs": { name: "mcp_context7_query-docs", label: "context7", description: "Synthetic preview-only MCP.",
+      parameters: { type: "object", properties: {}, additionalProperties: true }, qaProvenance: "synthetic",
+      async execute() { throwExecute(); },
+      renderCall(toolArgs) { return new Text("QA_MCP_CALL " + String(toolArgs?.query ?? ""), 0, 0); },
+      renderResult(result) { return new Text(String(preview(result) || "QA_MCP_PREVIEW"), 0, 0); } },
+    "mcp_grep_app_searchGitHub": { name: "mcp_grep_app_searchGitHub", label: "grep.app", description: "Synthetic inactive MCP stub.",
+      parameters: { type: "object", properties: {}, additionalProperties: true }, qaProvenance: "synthetic",
+      async execute() { throwExecute(); },
+      renderCall(toolArgs) { return new Text("QA_MCP_STUB_CALL " + String(toolArgs?.query ?? ""), 0, 0); } },
+  };
+` : "";
+  const setup = comprehensive ? `
+  const native = ${JSON.stringify(NATIVE_FIXTURES)};
+  const synthetic = ${JSON.stringify(SYNTHETIC_NAMES)};
+  const failures = [];
+  const installSessionStart = (pi) => pi.on("session_start", async () => {
+    const tools = await pi.getAllTools();
+    const existing = new Set(tools.map((tool) => tool.name));
+    for (const name of native) if (!existing.has(name)) failures.push("missing native " + name);
+    const sources = {};
+    for (const name of synthetic) {
+      if (existing.has(name)) {
+        if (name === "eval") failures.push("collision synthetic " + name);
+        else sources[name] = "builtin";
+        continue;
+      }
+      pi.registerTool(definitions[name]);
+      sources[name] = "synthetic";
+    }
+    writeFileSync(${JSON.stringify(PROVENANCE)}, JSON.stringify({ failures, sources, existing: [...existing] }, null, 2));
+  });
+  const collectDefinitions = (mode) => {
+    const observed = {};
+    for (const name of [...native, ...synthetic]) {
+      let definition;
+      try { definition = mode.session.getToolDefinition(name); } catch (error) { observed[name] = { error: String(error) }; continue; }
+      if (!definition) { observed[name] = { found: false }; continue; }
+      const provenance = definition.qaProvenance ?? (synthetic.includes(name) && !native.includes(name) ? "synthetic" : "builtin");
+      observed[name] = { found: true, provenance, renderCall: typeof definition.renderCall, renderResult: typeof definition.renderResult, renderShell: definition.renderShell ?? null };
+    }
+    writeFileSync(${JSON.stringify(DEFINITIONS)}, JSON.stringify(observed, null, 2));
+  };
+` : "";
   return `
+import { appendFileSync, writeFileSync } from "node:fs";
 import { Text, TuiMainScreen } from "@earendil-works/pi-tui";
 import { InteractiveMode } from "@code-yeongyu/senpi";
 import { noticeEntryRenderer } from ${JSON.stringify(pathToFileURL(join(DIST, "core/extensions/notice/index.js")).href)};
 let pending;
 let mode;
+let seq = 0;
+${synthetic}
 const initial = InteractiveMode.prototype.renderInitialMessages;
 const expand = InteractiveMode.prototype.setToolsExpanded;
 const render = TuiMainScreen.prototype.doRender;
+const handleMouse = TuiMainScreen.prototype.handleMouseInput;
 if (![initial, expand, render].every((fn) => typeof fn === "function")) throw new Error("QA_RENDER_SEAM_MISSING");
+${setup}
 InteractiveMode.prototype.renderInitialMessages = function (...args) {
   const result = initial.apply(this, args);
   mode = this;
   pending = "initial";
+  ${comprehensive ? "collectDefinitions(this);" : ""}
   this.ui.requestRender();
   return result;
 };
@@ -127,22 +369,31 @@ InteractiveMode.prototype.setToolsExpanded = function (expanded) {
 };
 TuiMainScreen.prototype.doRender = function (...args) {
   const result = render.apply(this, args);
+  seq += 1;
+  const state = { phase: pending ?? null, seq, expanded: mode?.toolOutputExpanded,
+    historyStart: mode?.chatContainer?.display?.historyStart, children: mode?.chatContainer?.children?.length };
+  const encoded = Buffer.from(JSON.stringify(state)).toString("base64");
+  this.terminal.write("\\x1b]0;QA_FRAME;" + seq + ";" + encoded + "\\x07");
   if (pending && mode?.renderer === this) {
-    const phase = pending;
+    this.terminal.write("\\x1b]0;QA_HISTORY;" + pending + ";" + encoded + "\\x07");
     pending = undefined;
-    const chat = mode.chatContainer;
-    const snapshot = { phase, expanded: mode.toolOutputExpanded, historyStart: chat?.display?.historyStart,
-      children: chat?.children?.length };
-    this.terminal.write("\\x1b]0;QA_HISTORY;" + phase + ";" + Buffer.from(JSON.stringify(snapshot)).toString("base64") + "\\x07");
   }
   return result;
 };
+${comprehensive ? `if (typeof handleMouse === "function") {
+  TuiMainScreen.prototype.handleMouseInput = function (data) {
+    const before = seq;
+    const result = handleMouse.call(this, data);
+    appendFileSync(${JSON.stringify(MOUSE_LOG)}, JSON.stringify({ before, after: seq, delta: seq - before }) + "\\n");
+    return result;
+  };
+}` : ""}
 export default function (pi) {
   pi.registerEntryRenderer("omo-kibitzer:nudged", noticeEntryRenderer(() => ({
     glyph: "*", title: "QA_NOTICE_EXPANDED", tone: "accent", why: "QA_NOTICE_EXPANDED",
     extra: [{ text: "QA_NOTICE_DETAIL", tone: "dim" }],
   })));
-  pi.registerTool({
+  ${comprehensive ? `installSessionStart(pi);` : `pi.registerTool({
     name: "eval", label: "eval", description: "Synthetic replay only; never executed.",
     parameters: { type: "object", properties: {}, additionalProperties: true },
     async execute() { throw new Error("QA_MUST_NOT_EXECUTE"); },
@@ -152,7 +403,7 @@ export default function (pi) {
       if (context?.isError || result.isError || options.expanded) return new Text(text, 0, 0);
       return new Text("QA_ORIGINAL_COLLAPSED", 0, 0);
     },
-  });
+  });`}
 }
 `;
 }
@@ -174,6 +425,9 @@ async function kill(child, label) {
 // Register before spawning or sending a key. Only an exact marker after the byte
 // boundary satisfies a capture; ordinary status prose cannot satisfy the waiter.
 const listeners = new Set();
+function emit() {
+  for (const listener of [...listeners]) listener();
+}
 function waitFrame(phase, from) {
   return new Promise((resolveFrame, reject) => {
     const timer = setTimeout(() => finish(new Error(`No QA ${phase} frame after byte ${from}`)), TIMEOUT);
@@ -190,6 +444,52 @@ function waitFrame(phase, from) {
     listeners.add(check);
     check();
   });
+}
+function waitNextFrame(afterSeq, from, phase) {
+  return new Promise((resolveFrame, reject) => {
+    const timer = setTimeout(() => finish(new Error(`No QA ${phase} frame with seq > ${afterSeq} after byte ${from}`)), TIMEOUT);
+    const finish = (error, value) => {
+      clearTimeout(timer);
+      listeners.delete(check);
+      error ? reject(error) : resolveFrame(value);
+    };
+    const check = () => {
+      const tail = stream.subarray(from).toString("latin1");
+      const pattern = /\x1b\]0;QA_FRAME;(\d+);([A-Za-z0-9+/=]+)\x07/g;
+      let match;
+      while ((match = pattern.exec(tail))) {
+        const state = JSON.parse(Buffer.from(match[2], "base64").toString());
+        if (state.seq > afterSeq) return finish(undefined, { end: from + match.index + match[0].length, state });
+      }
+    };
+    listeners.add(check);
+    check();
+  });
+}
+function waitNoFrame(afterSeq, ms) {
+  return new Promise((resolveAbsence) => {
+    const timer = setTimeout(() => finish(true), ms);
+    const finish = (absent) => { clearTimeout(timer); listeners.delete(check); resolveAbsence(absent); };
+    const check = () => {
+      const tail = stream.toString("latin1");
+      const pattern = /\x1b\]0;QA_FRAME;(\d+);/g;
+      let match;
+      while ((match = pattern.exec(tail))) if (Number(match[1]) > afterSeq) return finish(false);
+    };
+    listeners.add(check);
+  });
+}
+function latestFrame() {
+  const pattern = /\x1b\]0;QA_FRAME;(\d+);([A-Za-z0-9+/=]+)\x07/g;
+  let match;
+  let last;
+  const text = stream.toString("latin1");
+  while ((match = pattern.exec(text))) last = { end: match.index + match[0].length, state: JSON.parse(Buffer.from(match[2], "base64").toString()) };
+  return last;
+}
+
+function sanitizeScreen(text) {
+  return text.split("\n").map((line) => line.replace(/\s+$/, "")).filter((line) => line.length > 0).join("\n");
 }
 
 async function xtermAssets() {
@@ -211,21 +511,52 @@ async function xtermAssets() {
   return join(cache, "node_modules/@xterm/xterm");
 }
 
-async function renderCaptures() {
+const PALETTES = {
+  light: { background: "#ffffff", foreground: "#1f2328" },
+  dark: { background: "#1f1f1f", foreground: "#e6edf3" },
+};
+function paletteFor(theme) {
+  if (!comprehensive) return PALETTES.light;
+  return theme === "dark" ? PALETTES.dark : PALETTES.light;
+}
+
+async function ensureBrowser() {
+  if (page) return;
+  const palette = paletteFor(themeArg);
   const assets = await xtermAssets();
   const [js, css] = await Promise.all([Bun.file(join(assets, "lib/xterm.js")).text(), Bun.file(join(assets, "css/xterm.css")).text()]);
-  const html = `<!doctype html><meta charset="utf-8"><style>${css}body{margin:0;background:white}</style>
+  const html = `<!doctype html><meta charset="utf-8"><style>${css}body{margin:0;background:${palette.background}}</style>
 <div id="terminal"></div><script>${js.replace(/<\/script/gi, "<\\/script")}</script><script>
+const palette = ${JSON.stringify(palette)};
+const cols = ${COLS}, rows = ${ROWS};
 window.show = async (base64) => {
   window.term?.dispose();
   const el = document.getElementById("terminal"); el.innerHTML = "";
-  const term = window.term = new Terminal({cols:150,rows:45,fontSize:13,fontFamily:"Consolas,monospace",scrollback:100000,theme:{background:"#ffffff",foreground:"#1f2328"}});
+  const term = window.term = new Terminal({cols,rows,fontSize:13,fontFamily:"Consolas,monospace",scrollback:100000,theme:palette});
   term.open(el);
   await new Promise(resolve => term.write(Uint8Array.from(atob(base64), c => c.charCodeAt(0)), resolve));
   await new Promise(requestAnimationFrame);
   const b = term.buffer.active;
-  return {viewport:Array.from({length:45},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)??"").join("\\n"),
-    scrollback:Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString(true)??"").join("\\n"),baseY:b.baseY,viewportY:b.viewportY};
+  return {viewport:Array.from({length:rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)??"").join("\\n"),
+    scrollback:Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString(true)??"").join("\\n"),baseY:b.baseY,viewportY:b.viewportY, length:b.length};
+};
+window.findRow = (needle) => {
+  const b = window.term.buffer.active;
+  for (let i = b.viewportY; i < b.viewportY + rows; i += 1) {
+    const line = b.getLine(i)?.translateToString(true) ?? "";
+    if (line.includes(needle)) return i - b.viewportY + 1;
+  }
+  return 0;
+};
+window.findLine = (needle) => {
+  const b = window.term.buffer.active;
+  for (let i = 0; i < b.length; i += 1) if ((b.getLine(i)?.translateToString(true) ?? "").includes(needle)) return i;
+  return -1;
+};
+window.scrollToText = (needle) => {
+  const index = window.findLine(needle);
+  if (index >= 0) window.term.scrollToLine(Math.max(0, index - 2));
+  return index;
 };
 </script>`;
   writeFileSync(join(EVIDENCE, "xterm.html"), html);
@@ -256,13 +587,23 @@ window.show = async (base64) => {
       reject(new Error(`Chrome exited before CDP endpoint: ${text}`));
     })().catch(reject);
   });
-  report.browser = { command: launch, transport: "socket" };
+  report.browser = { command: launch, transport: "socket", palette };
   browser = await omowright.connect(await endpoint);
   const targets = await browser.listTargets();
   const target = targets.find((item) => item.type === "page");
   if (!target) throw new Error("Owned Chrome has no page target");
-  const page = await browser.attachPage(target.targetId ?? target.id);
+  page = await browser.attachPage(target.targetId ?? target.id);
   await page.goto(`http://127.0.0.1:${server.port}/`, { waitUntil: "load" });
+}
+
+async function screenFor(end) {
+  await ensureBrowser();
+  const base64 = stream.subarray(0, end).toString("base64");
+  return page.evaluate(`window.show(${JSON.stringify(base64)})`);
+}
+
+async function renderCaptures(palette = paletteFor(themeArg)) {
+  await ensureBrowser();
   for (const [phase, capture] of Object.entries(report.captures)) {
     const base64 = stream.subarray(0, capture.end).toString("base64");
     const screen = await page.evaluate(`window.show(${JSON.stringify(base64)})`);
@@ -270,25 +611,80 @@ window.show = async (base64) => {
     writeFileSync(join(EVIDENCE, `${phase}-scrollback.txt`), screen.scrollback);
     writeFileSync(join(EVIDENCE, `${phase}.png`), await page.screenshot());
     capture.screen = { baseY: screen.baseY, viewportY: screen.viewportY };
-    capture.sentinels = Object.fromEntries(["QA_HISTORY_BEGIN", "QA_HISTORY_END", "QA_ERROR_VISIBLE", "QA_NOTICE_EXPANDED", "QA_LONG_5_075"].map((needle) => [needle, screen.viewport.includes(needle)]));
+    const needles = comprehensive
+      ? ["QA_COMPREHENSIVE_BEGIN", "QA_COMPREHENSIVE_END", ...ALL_MARKERS]
+      : ["QA_HISTORY_BEGIN", "QA_HISTORY_END", "QA_ERROR_VISIBLE", "QA_NOTICE_EXPANDED", "QA_LONG_5_075"];
+    capture.sentinels = Object.fromEntries(needles.map((needle) => [needle, screen.scrollback.includes(needle)]));
     capture.viewport = screen.viewport;
+    capture.scrollback = screen.scrollback;
+    capture.palette = palette;
   }
-  await browser.close();
-  browser = undefined;
-  await kill(chromeProc, "owned Chrome");
+}
+
+async function sceneCaptures() {
+  if (!comprehensive || !report.captures.recollapsed) return;
+  const final = report.captures.recollapsed;
+  mkdirSync(join(EVIDENCE, "scenes"), { recursive: true });
+  const lines = final.scrollback.split("\n");
+  report.scenes = [];
+  for (const scene of comprehensiveScenes) {
+    const index = lines.findIndex((line) => scene.markers.some((marker) => line.includes(marker)));
+    const slice = index < 0 ? "" : lines.slice(Math.max(0, index - 3), Math.min(lines.length, index + 12)).join("\n");
+    writeFileSync(join(EVIDENCE, "scenes", `${scene.name}.txt`), slice);
+    const first = scene.markers.find((marker) => final.scrollback.includes(marker));
+    if (first) await page.evaluate(`window.scrollToText(${JSON.stringify(first)})`);
+    writeFileSync(join(EVIDENCE, "scenes", `${scene.name}.png`), await page.screenshot());
+    report.scenes.push({ name: scene.name, markers: scene.markers, found: scene.markers.filter((marker) => final.scrollback.includes(marker)),
+      missing: scene.markers.filter((marker) => !final.scrollback.includes(marker)), scrollback: slice });
+  }
 }
 
 try {
   mkdirSync(AGENT, { recursive: true });
   mkdirSync(dirname(SESSION), { recursive: true });
-  writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ theme: "grok-day", packages: [], hideThinkingBlock: true, disabledBuiltinExtensions: ["codemode"], showCacheMissNotices: false }));
-  writeFileSync(SESSION, fixture());
-  writeFileSync(join(EVIDENCE, "synthetic-session.jsonl"), fixture());
+  const theme = comprehensive ? themeArg : "grok-day";
+  let themeName = theme;
+  const settings = { theme: themeName, packages: [], hideThinkingBlock: true, disabledBuiltinExtensions: ["codemode"], showCacheMissNotices: false,
+    ...(comprehensive ? { terminal: { mouse: "always" } } : {}) };
+  if (lightRun) {
+    const source = resolve(themeArg);
+    const themeJson = JSON.parse(readFileSync(source, "utf8"));
+    themeName = typeof themeJson.name === "string" && themeJson.name.length > 0 ? themeJson.name : basename(source, ".json");
+    mkdirSync(join(AGENT, "themes"), { recursive: true });
+    writeFileSync(join(AGENT, "themes", `${themeName}.json`), JSON.stringify(themeJson, null, 2));
+    settings.theme = themeName;
+  }
+  writeFileSync(join(AGENT, "settings.json"), JSON.stringify(settings));
+  const sessionFixture = comprehensive ? comprehensiveFixture() : { text: fixture(), toolCount: 0 };
+  writeFileSync(SESSION, sessionFixture.text);
+  writeFileSync(join(EVIDENCE, "synthetic-session.jsonl"), sessionFixture.text);
   writeFileSync(QA_TOOL, qaExtension());
   writeFileSync(join(EVIDENCE, "qa-tools.ts"), qaExtension());
   const { brandEnvNames } = await import(pathToFileURL(join(DIST, "core/brand.js")).href);
-  const isolated = Object.fromEntries([...brandEnvNames("CODING_AGENT_DIR"), "OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"].map((name) => [name, AGENT]));
-  const env = { ...process.env, ...isolated, PI_TUI_HISTORY_LINES: "100", TERM: "xterm-256color", COLORTERM: "truecolor" };
+  const home = join(RUN_TMP, "home");
+  const isolated = Object.fromEntries([
+    ["HOME", home], ["USERPROFILE", home],
+    ["APPDATA", join(RUN_TMP, "appdata")], ["LOCALAPPDATA", join(RUN_TMP, "localappdata")],
+    ...[...brandEnvNames("CODING_AGENT_DIR"), "OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"].map((name) => [name, AGENT]),
+  ]);
+  // The owned scratch itself lives below the OS temp directory; forbid the user's
+  // real profile roots instead of rejecting that owned temp subtree.
+  const realRoots = [join(homedir(), ".omo"), join(homedir(), ".bun"), join(homedir(), ".claude"), process.env.APPDATA]
+    .filter(Boolean).map((path) => resolve(path).toLowerCase());
+  const exactProfiles = [homedir(), process.env.USERPROFILE, process.env.APPDATA, process.env.LOCALAPPDATA]
+    .filter(Boolean).map((path) => resolve(path).toLowerCase());
+  const ownedRoot = resolve(RUN_TMP).toLowerCase();
+  for (const [name, value] of Object.entries(isolated)) {
+    const normalized = resolve(value).toLowerCase();
+    const escapes = !(normalized === ownedRoot || normalized.startsWith(`${ownedRoot}\\`));
+    const realProfile = exactProfiles.includes(normalized) || realRoots.some((path) => normalized === path || normalized.startsWith(`${path}\\`));
+    if (escapes || realProfile) throw new Error(`Isolated ${name}=${value} escapes scratch ${RUN_TMP}`);
+  }
+  report.isolatedEnv = isolated;
+  console.log(JSON.stringify({ isolatedEnv: isolated, runTmp: RUN_TMP, evidence: EVIDENCE, dimensions: { cols: COLS, rows: ROWS }, theme: settings.theme }, null, 2));
+  const env = { ...process.env, ...isolated, PI_TUI_HISTORY_LINES: comprehensive ? "5000" : "100", TERM: "xterm-256color", COLORTERM: "truecolor",
+    ...(comprehensive && process.env.QA_DISABLE_MOUSE_TRACKING !== "1" ? { WT_SESSION: "qa-owned" } : {}) };
+  if (comprehensive && process.env.QA_DISABLE_MOUSE_TRACKING === "1") delete env.WT_SESSION;
   const command = [process.execPath, CLI, "--session", SESSION, "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-approve", "--offline",
     ...(!noFold ? ["-e", join(REPO, "extension/tool-fold.ts")] : []), "-e", QA_TOOL];
   report.engine = { command, cwd: RUN_TMP, isolatedEnv: isolated, tempEnv: Object.fromEntries(["RUN_TMP", "TMPDIR", "TMP", "TEMP", "NODE_COMPILE_CACHE", "BUN_RUNTIME_TRANSPILER_CACHE_PATH"].map((key) => [key, env[key]])) };
@@ -296,12 +692,22 @@ try {
   const engine = Bun.spawn(command, { cwd: RUN_TMP, env, terminal: { cols: COLS, rows: ROWS,
     data(_terminal, bytes) {
       stream = Buffer.concat([stream, Buffer.from(bytes)]);
-      for (const listener of [...listeners]) listener();
+      emit();
     },
   } });
   children.add(engine);
   report.engine.pid = engine.pid;
   report.captures.initial = await initial;
+  if (comprehensive) {
+    await ensureBrowser();
+    const initialScreen = await screenFor(report.captures.initial.end);
+    report.captures.initial.screen = { baseY: initialScreen.baseY, viewportY: initialScreen.viewportY };
+    report.captures.initial.viewport = initialScreen.viewport;
+    const mouseReady = stream.toString("latin1").includes("[?1006h") &&
+      (stream.toString("latin1").includes("[?1000h") || stream.toString("latin1").includes("[?1002h"));
+    report.mouseMode = { sgr: stream.toString("latin1").includes("[?1006h"), tracking1000: stream.toString("latin1").includes("[?1000h"), tracking1002: stream.toString("latin1").includes("[?1002h"), ready: mouseReady };
+    if (!mouseReady) throw new Error("QA mouse mode missing: expected ?1006h and ?1000h or ?1002h");
+  }
   for (const phase of ["expanded", "recollapsed"]) {
     const from = stream.length;
     const frame = waitFrame(phase, from);
@@ -309,21 +715,151 @@ try {
     engine.terminal.write("\x0f");
     report.captures[phase] = await frame;
   }
+  if (comprehensive) {
+    const current = latestFrame();
+    const headerNeedle = "Ran ";
+    let row = await page.evaluate(`window.findRow(${JSON.stringify(headerNeedle)})`);
+    if (!noFold) {
+      if (!row) throw new Error("QA mixed-group header row not found in initial frame");
+      let from = stream.length;
+      let next = waitNextFrame(current.state.seq, from, "mouse-expanded");
+      report.actions.push({ action: "mouse-sgr", purpose: "header expand", row, col: 3, fromByte: from,
+        sequence: `ESC[<0;3;${row}M ESC[<0;3;${row}m` });
+      engine.terminal.write(`\x1b[<0;3;${row}M\x1b[<0;3;${row}m`);
+      report.captures["mouse-expanded"] = await next;
+      const mid = latestFrame();
+      from = stream.length;
+      next = waitNextFrame(mid.state.seq, from, "mouse-recollapsed");
+      report.actions.push({ action: "mouse-sgr", purpose: "header collapse", row, col: 3, fromByte: from,
+        sequence: `ESC[<0;3;${row}M ESC[<0;3;${row}m` });
+      engine.terminal.write(`\x1b[<0;3;${row}M\x1b[<0;3;${row}m`);
+      report.captures["mouse-recollapsed"] = await next;
+      const after = latestFrame();
+      const outsideNeedle = "QA_BREAK_6";
+      const outsideRow = await page.evaluate(`window.findRow(${JSON.stringify(outsideNeedle)})`);
+      const safeRow = outsideRow || Math.max(1, Math.min(ROWS, row + 3));
+      const beforeScreen = await screenFor(stream.length);
+      report.actions.push({ action: "mouse-sgr", purpose: "outside-header negative", row: safeRow, col: 3, fromByte: stream.length,
+        sequence: `ESC[<0;3;${safeRow}M ESC[<0;3;${safeRow}m` });
+      engine.terminal.write(`\x1b[<0;3;${safeRow}M\x1b[<0;3;${safeRow}m`);
+      await waitNoFrame(after.state.seq, 750);
+      const afterScreen = await screenFor(stream.length);
+      report.captures["mouse-outside"] = { end: stream.length, state: after.state, viewport: afterScreen.viewport };
+      report.mouseOutsideAbsent = sanitizeScreen(beforeScreen.viewport) === sanitizeScreen(afterScreen.viewport);
+    } else {
+      const outsideNeedle = "QA_BREAK_6";
+      row = await page.evaluate(`window.findRow(${JSON.stringify(outsideNeedle)})`);
+      const safeRow = row || 1;
+      const before = latestFrame();
+      const beforeScreen = await screenFor(stream.length);
+      report.actions.push({ action: "mouse-sgr", purpose: "native outside-header negative", row: safeRow, col: 3, fromByte: stream.length,
+        sequence: `ESC[<0;3;${safeRow}M ESC[<0;3;${safeRow}m` });
+      engine.terminal.write(`\x1b[<0;3;${safeRow}M\x1b[<0;3;${safeRow}m`);
+      await waitNoFrame(before.state.seq, 750);
+      const afterScreen = await screenFor(stream.length);
+      report.captures["mouse-outside"] = { end: stream.length, state: before.state, viewport: afterScreen.viewport };
+      report.mouseOutsideAbsent = sanitizeScreen(beforeScreen.viewport) === sanitizeScreen(afterScreen.viewport);
+    }
+  }
   await kill(engine, "isolated engine");
   writeFileSync(join(EVIDENCE, "raw.ansi"), stream);
-  for (const [phase, capture] of Object.entries(report.captures)) writeFileSync(join(EVIDENCE, `${phase}.ansi`), stream.subarray(0, capture.end));
+  for (const [phase, capture] of Object.entries(report.captures)) {
+    if (capture.end) writeFileSync(join(EVIDENCE, `${phase}.ansi`), stream.subarray(0, capture.end));
+  }
   await renderCaptures();
-  const initialScreen = report.captures.initial.viewport;
-  const finalScreen = report.captures.recollapsed.viewport;
-  report.assertions = [
-    { name: "initial body and error visible", ok: initialScreen.includes("QA_HISTORY_END") && initialScreen.includes("QA_ERROR_VISIBLE") },
-    { name: "expanded history overflow", ok: report.captures.expanded.state.historyStart > 0 },
-    { name: "expanded multiline content visible", ok: report.captures.expanded.viewport.includes("QA_LONG_") },
-    { name: "recollapsed body and error visible", ok: finalScreen.includes("QA_HISTORY_END") && finalScreen.includes("QA_ERROR_VISIBLE") },
-    { name: "recollapsed long output hidden", ok: !finalScreen.includes("QA_LONG_") },
-    { name: "no runtime renderer failure", ok: !/QA_RENDER_SEAM_MISSING|Failed to load extension|TypeError:|detachAll|\[render error/.test(Bun.stripANSI(stream.toString())) },
-  ];
-  if (!noFold) report.assertions.push({ name: "recollapsed compact summaries restored", ok: finalScreen.includes("QA_STEP_1") && finalScreen.includes("QA_STEP_5") });
+  if (comprehensive) await sceneCaptures();
+  const initialScreen = report.captures.initial.viewport ?? "";
+  const finalScreen = report.captures.recollapsed.viewport ?? "";
+  const finalScrollback = report.captures.recollapsed.scrollback ?? "";
+  if (comprehensive) {
+    let provenance = {};
+    let definitions = {};
+    try { provenance = JSON.parse(readFileSync(PROVENANCE, "utf8")); } catch {}
+    try { definitions = JSON.parse(readFileSync(DEFINITIONS, "utf8")); } catch {}
+    const executeCalls = existsSync(EXECUTE_COUNTER) ? readFileSync(EXECUTE_COUNTER, "utf8").split(/\r?\n/).filter(Boolean).length : 0;
+    const mouseEvents = existsSync(MOUSE_LOG) ? readFileSync(MOUSE_LOG, "utf8").split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)) : [];
+    const expectedShapes = {
+      two: NATIVE_TWO_SLOT, no: NATIVE_NO_SLOT, call: NATIVE_CALL_ONLY,
+      syntheticNoSlot: ["workflow", "workpool", "thread_send", "thread_report", "thread_answer"],
+    };
+    const shapeFailures = [];
+    for (const name of expectedShapes.two) {
+      const shape = definitions[name];
+      if (!shape?.found || shape.renderCall !== "function" || shape.renderResult !== "function") shapeFailures.push(`${name}: expected two renderer slots`);
+    }
+    for (const name of [...expectedShapes.no, ...expectedShapes.syntheticNoSlot]) {
+      const shape = definitions[name];
+      if (!shape?.found || shape.renderCall === "function" || shape.renderResult === "function") shapeFailures.push(`${name}: expected no renderer slots`);
+    }
+    for (const name of expectedShapes.call) {
+      const shape = definitions[name];
+      if (!shape?.found || shape.renderCall !== "function" || shape.renderResult === "function") shapeFailures.push(`${name}: expected call-only slot`);
+    }
+    if (!definitions["mcp_context7_query-docs"] || definitions["mcp_context7_query-docs"].renderCall !== "function" || definitions["mcp_context7_query-docs"].renderResult !== "function") shapeFailures.push("mcp_context7_query-docs: expected two synthetic slots");
+    if (!definitions["mcp_grep_app_searchGitHub"] || definitions["mcp_grep_app_searchGitHub"].renderCall !== "function" || definitions["mcp_grep_app_searchGitHub"].renderResult === "function") shapeFailures.push("mcp_grep_app_searchGitHub: expected call-only stub");
+    for (const name of NATIVE_FIXTURES) if (!definitions[name]?.found) shapeFailures.push(`${name}: missing native definition`);
+    for (const name of SYNTHETIC_NAMES) if (!definitions[name]?.found || definitions[name].provenance !== "synthetic") shapeFailures.push(`${name}: missing synthetic provenance`);
+    const missingMarkers = ALL_MARKERS.filter((marker) => !finalScrollback.includes(marker));
+    const sceneResults = comprehensiveScenes.map((scene) => {
+      const expected = noFold ? scene.markers : scene.foldMarkers;
+      return {
+        name: scene.name,
+        markers: scene.markers,
+        foldMarkers: scene.foldMarkers,
+        found: expected.filter((marker) => finalScrollback.includes(marker)),
+        missing: expected.filter((marker) => !finalScrollback.includes(marker)),
+      };
+    });
+    const foldSceneMissing = sceneResults.flatMap((scene) => scene.missing);
+    report.definitions = definitions;
+    report.provenance = provenance;
+    report.executeCalls = executeCalls;
+    report.mouseEvents = mouseEvents;
+    report.fixture = { expectedToolCards: sessionFixture.toolCount, nativeNames: NATIVE_FIXTURES, syntheticNames: SYNTHETIC_NAMES };
+    report.sceneAssertions = sceneResults;
+    report.versionProbe = {};
+    try {
+      const packageJson = JSON.parse(readFileSync(join(dirname(DIST), "package.json"), "utf8"));
+      report.runtime.version = packageJson.version ?? null;
+    } catch {
+      try {
+        const packageJson = JSON.parse(readFileSync(join(DIST, "package.json"), "utf8"));
+        report.runtime.version = packageJson.version ?? null;
+      } catch { report.runtime.version = "unreported"; }
+    }
+    report.assertions = [
+      { name: "initial body visible", ok: initialScreen.includes("QA_COMPREHENSIVE") },
+      { name: "expanded full history rendered", ok: report.captures.expanded.state.historyStart >= 0 && report.captures.expanded.scrollback.includes("QA_EVAL_MIXED_OUTPUT") },
+      { name: "expanded content visible", ok: report.captures.expanded.scrollback.includes("QA_COMPREHENSIVE_END") },
+      { name: "recollapsed body visible", ok: finalScreen.includes("QA_COMPREHENSIVE_END") },
+      { name: noFold ? "native scene markers after recollapse" : "grouped scene markers after recollapse",
+        ok: noFold ? missingMarkers.length === 0 : foldSceneMissing.length === 0,
+        missing: noFold ? missingMarkers : foldSceneMissing },
+      { name: "unsafe cards outside compact runs", ok: UNSAFE_MARKERS.every((marker) => finalScrollback.includes(marker)) },
+      { name: "definition provenance and slots", ok: shapeFailures.length === 0 && (provenance.failures ?? []).length === 0, failures: [...(provenance.failures ?? []), ...shapeFailures] },
+      { name: "synthetic fixtures never execute", ok: executeCalls === 0 && !stream.toString().includes("QA_MUST_NOT_EXECUTE"), executeCalls },
+      { name: "fixture tool-card count", ok: sessionFixture.toolCount === 31, actual: sessionFixture.toolCount },
+      { name: "mouse mode enabled", ok: report.mouseMode?.ready === true },
+      { name: "outside-header click is a no-op", ok: report.mouseOutsideAbsent === true && mouseEvents.length > 0 },
+      { name: "no runtime renderer failure", ok: !/QA_RENDER_SEAM_MISSING|Failed to load extension|TypeError:|detachAll|\[render error/.test(Bun.stripANSI(stream.toString())) },
+      { name: "runtime version recorded", ok: typeof report.runtime.version === "string" && report.runtime.version.length > 0 },
+      { name: "captures complete", ok: ["initial", "expanded", "recollapsed", ...(noFold ? [] : ["mouse-expanded", "mouse-recollapsed"])].every((phase) => existsSync(join(EVIDENCE, `${phase}.png`))) },
+    ];
+    if (!noFold) {
+      report.assertions.push({ name: "header click toggles members", ok: report.captures["mouse-expanded"].scrollback !== report.captures["mouse-recollapsed"].scrollback ||
+        report.captures["mouse-expanded"].state.seq !== report.captures["mouse-recollapsed"].state.seq });
+    }
+  } else {
+    report.assertions = [
+      { name: "initial body and error visible", ok: initialScreen.includes("QA_HISTORY_END") && initialScreen.includes("QA_ERROR_VISIBLE") },
+      { name: "expanded history overflow", ok: report.captures.expanded.state.historyStart > 0 },
+      { name: "expanded multiline content visible", ok: report.captures.expanded.viewport.includes("QA_LONG_") },
+      { name: "recollapsed body and error visible", ok: finalScreen.includes("QA_HISTORY_END") && finalScreen.includes("QA_ERROR_VISIBLE") },
+      { name: "recollapsed long output hidden", ok: !finalScreen.includes("QA_LONG_") },
+      { name: "no runtime renderer failure", ok: !/QA_RENDER_SEAM_MISSING|Failed to load extension|TypeError:|detachAll|\[render error/.test(Bun.stripANSI(stream.toString())) },
+    ];
+    if (!noFold) report.assertions.push({ name: "recollapsed compact summaries restored", ok: finalScreen.includes("QA_STEP_1") && finalScreen.includes("QA_STEP_5") });
+  }
   if (report.assertions.some((assertion) => !assertion.ok)) throw new Error("Replay assertions failed; inspect report.json and PNG captures");
 } catch (error) {
   failure = error;
@@ -347,7 +883,9 @@ try {
     failure ??= error;
   }
   report.liveResources = children.size;
+  report.cleanupReceipt = { path: RUN_TMP, removed: !existsSync(RUN_TMP), liveResources: children.size };
   writeFileSync(join(EVIDENCE, "report.json"), JSON.stringify(report, null, 2));
+  writeFileSync(join(EVIDENCE, "cleanup.json"), JSON.stringify(report.cleanupReceipt, null, 2));
 }
-console.log(JSON.stringify({ provider, noFold, evidence: EVIDENCE, assertions: report.assertions, cleanup, error: report.error }, null, 2));
+console.log(JSON.stringify({ provider, noFold, scenario: report.scenario, evidence: EVIDENCE, assertions: report.assertions, executeCalls: report.executeCalls, cleanup, error: report.error }, null, 2));
 if (failure) process.exitCode = 1;
