@@ -396,30 +396,37 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Acceptance criteria: both READMEs and CLAUDE.md say the same thing, the claim traces to the report's definition table and the runtime source, and an independent reviewer confirms.
   - Commit: Y - `tool-fold: note that slotless runtime bash cards stay native`.
 
+- [x] 15. Strip interior CR/TAB from renderer-backed rows (follow-up: F2 should-fix S1)
+  - Recommended task executor category: quick - one helper and its tests.
+  - Scope: `extension/tool-fold.ts`, `test/tool-fold.test.ts`.
+  - What to do: `firstLine` applies terminalSafe per line, but CONTROL_SEQUENCE skips \r and \t. Compact rows (describe), the shell command line and the eval summary can therefore carry an interior CR, which moves the cursor to column 0 and overwrites the row, or a TAB, which counts as one cell but expands up to 8 and can overflow 80 columns. Replace interior CR/TAB with a space in the selected line, and pass schedule_wakeup ignoredFields through plainText. This completes Must-have 7 and IS-7.
+  - Acceptance criteria: tests prove that `build\rOK` and `a\tb` become single-space-separated text in a compact row, a powershell row and an eval summary, and that ignoredFields control text is stripped; reverting the change fails them; `bun test` and `bun test ./qa/real-render.qa.ts` exit 0; lsp_diagnostics clean; an independent reviewer confirms.
+  - Commit: Y - `tool-fold: replace interior CR and TAB in folded rows`.
+
 ## Final verification wave
 > Runs after ALL todos. ALL must APPROVE. The user preapproved this planning scope and requested no repeated approval questions; report the verified outcome without a new confirmation gate. Any new destructive/external action remains outside scope.
-- [ ] F1. Plan compliance audit
+- [x] F1. Plan compliance audit
   - Recommended task executor category: quick - mechanical finite inventory and receipt audit.
   - References: final plan, 79-name fixture result, task-1.md through task-11.md and final diff.
   - Acceptance criteria: all 61 conditional names and 18 preserved names are accounted for; every task is green or has a fixed/rechecked failure; no outside-scope change.
   - QA scenarios: QF1+ compare actual fixture rows against the independent catalog and plan. QF1- remove one row in a memory-only validation copy and require the inventory audit to reject it.
   - Evidence: `.omo/evidence/comprehensive-grouping/f1.md`.
   - Commit: N.
-- [ ] F2. Code quality review
+- [x] F2. Code quality review
   - Recommended task executor category: deep-high - correctness depends on cross-renderer ownership and failure invariants rather than one test; this is the single non-quick final review.
   - References: final diff, native rendering/preview contracts, production state predicates, test mocks and integration receipt.
   - Acceptance criteria: no source/result mutation, synthesized renderer slot, unknown-tool enrollment, private-index write, suppressed failure, timing-luck test or stale wrapper component; no blocker affecting an IS row.
   - QA scenarios: QF2+ review all new eligibility branches against exact native shapes and result discriminants. QF2- trace media, no-slot 11-line fallback, MCP refusal and semantic thread/workflow errors to their actual rejection paths; reject any unsupported inference.
   - Evidence: `.omo/evidence/comprehensive-grouping/f2.md`.
   - Commit: N; blockers return to their owning task.
-- [ ] F3. Real manual QA
+- [x] F3. Real manual QA
   - Recommended task executor category: quick - fixed evidence inspection; the lead owns the surface check.
   - References: task-10.md/task-11.md, every xterm PNG/ANSI/action/report and original-history receipt.
   - Acceptance criteria: the lead actually opens every scenario capture; no blank/clipped/overlapping/misframed screen, hidden decision/image/error, missing fitting row or unverified mouse path. Runtime/tree identity and cleanup receipts match.
   - QA scenarios: QF3+ inspect all eight matrix runs and two original-history runs. QF3- compare unsafe-card/title/image cases against native baseline and inspect recollapsed frames for lost early rows; an incomplete artifact or uninspected frame is FAIL, not a note.
   - Evidence: `.omo/evidence/comprehensive-grouping/f3.md`, per-capture PASS/FAIL.
   - Commit: N; rerun only invalidated evidence.
-- [ ] F4. Ideal-state fidelity
+- [x] F4. Ideal-state fidelity
   - Recommended task executor category: quick - explicit one-to-one traceability gate.
   - References: the Success criteria table below and all final receipts.
   - Acceptance criteria: all nine IS rows have observed proof and every GAP has a delivering task; no percentage claim without the complete table.
