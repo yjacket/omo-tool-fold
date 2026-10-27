@@ -15,6 +15,7 @@ import { hideFinishedThinking, type RenderDescriptor } from "./thinking-label";
 const HOOK = Symbol.for("omo.tool-fold.hook.v2");
 const IMPL = Symbol.for("omo.tool-fold.impl.v2");
 const WRAPPED = Symbol.for("omo.tool-fold.wrapped.v2");
+const PROJECTED = Symbol.for("omo.tool-fold.projection.v1");
 const OWN = Symbol.for("omo.tool-fold.component");
 const THINKING_HOOK = Symbol.for("omo.tool-fold.thinking-hook.v1");
 const GROUP_HOOK = Symbol.for("omo.tool-fold.group-hook.v1");
@@ -51,6 +52,14 @@ const COMPACT_TOOLS = new Set([
 	"lsp_prepare_rename",
 	"lsp_rename",
 ]);
+/** Audited default-rendered controls: summarized only inside a run, never given renderer slots. */
+const PROJECTION_TOOLS = new Set(["kill_bash", "monitor", "schedule_wakeup", "schedule_prompt", "workflow", "workpool"]);
+const WORKFLOW_ACTIONS = new Set(["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend"]);
+const WORKFLOW_KINDS = new Set(["started", "attached", "snapshot", "waited", "detached", "cancelled", "retried", "sent", "amended"]);
+const RUN_STATUSES = new Set(["pending", "running", "paused", "completed"]);
+const BAD_NODE_STATES = new Set(["failed", "cancelled", "skipped"]);
+const POOL_OPS = new Set(["create", "push", "close", "inspect", "cancel", "yield"]);
+const POOL_STATUSES = new Set(["open", "closing", "cancelled"]);
 const VERB_KEYS = ["op", "action", "command"];
 const OBJECT_KEYS = [
 	"task_summary",
@@ -278,8 +287,8 @@ const patchPlan: ToolPlan = {
 
 const TODO_OPS = new Set(["init", "start", "done", "rm", "drop", "append", "view"]);
 
-/** Native todo titles sanitize text the same way: strip escapes, flatten lines, collapse spaces. */
-function todoText(value: string): string {
+/** Native titles and projection rows sanitize text: strip escapes, flatten lines, collapse spaces. */
+function plainText(value: string): string {
 	let flat = "";
 	for (const char of terminalSafe(value).replace(/[\r\n]+/g, " ")) {
 		const code = char.codePointAt(0) ?? 0;
@@ -327,7 +336,7 @@ function todoTarget(record: Record<string, unknown>): { text?: string; malformed
 		const value = record[key];
 		if (value === undefined || value === null) continue;
 		if (typeof value !== "string") return { malformed: true };
-		return { text: todoText(value) };
+		return { text: plainText(value) };
 	}
 	return {};
 }
@@ -354,7 +363,7 @@ function todoTitle(args: unknown, details: unknown, hasResult: boolean): string 
 			const items = record.items;
 			if (items !== undefined && items !== null && !Array.isArray(items)) return undefined;
 			const count = Array.isArray(items) ? items.length : 0;
-			const name = typeof phase === "string" ? todoText(phase) : "";
+			const name = typeof phase === "string" ? plainText(phase) : "";
 			return `todo append: ${name || "(missing phase)"} (${todoCountLabel(count, "item")})`;
 		}
 		case "start":
@@ -371,6 +380,284 @@ function todoTitle(args: unknown, details: unknown, hasResult: boolean): string 
 		}
 		case "view":
 			return "todo view";
+	}
+}
+
+type ProjectionLine = { text: string; status: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+	const text = typeof value === "string" ? plainText(value) : "";
+	return text.length > 0 ? text : undefined;
+}
+
+function resultTextLine(result: unknown): string | undefined {
+	if (!isRecord(result) || !Array.isArray(result.content)) return undefined;
+	for (const block of result.content) {
+		if (isRecord(block) && typeof block.text === "string") {
+			const line = firstLine(block.text);
+			if (line) return line;
+		}
+	}
+	return undefined;
+}
+
+/** Only a real definition shape admits the projection path; no slot is ever synthesized. */
+function projectionAdmissible(name: string, definition: Record<PropertyKey, unknown>): boolean {
+	const hasCall = Object.hasOwn(definition, "renderCall");
+	const hasResult = Object.hasOwn(definition, "renderResult");
+	if (name === "monitor") return hasCall && typeof definition.renderCall === "function" && !hasResult;
+	return !hasCall && !hasResult;
+}
+
+function killBashLine(args: unknown, result: unknown): ProjectionLine | undefined {
+	const request = isRecord(args) ? args : {};
+	const all = request.all === true;
+	const id = nonEmptyString(request.bash_id);
+	if (!all && !id) return undefined;
+	const target = all ? "all" : id;
+	if (!result) return { text: `kill_bash ${target}`, status: "call" };
+	const receipt = resultTextLine(result);
+	if (!receipt) return undefined;
+	return { text: `kill_bash ${target}: ${plainText(receipt)}`, status: "complete" };
+}
+
+function monitorLine(args: unknown, result: unknown): ProjectionLine | undefined {
+	const request = isRecord(args) ? args : {};
+	if (request.action !== undefined || request.human_input === true) return undefined;
+	const target = nonEmptyString(request.description) ?? nonEmptyString(request.command) ?? nonEmptyString(request.path) ?? nonEmptyString(request.target);
+	if (!target) return undefined;
+	if (!result) return { text: `monitor ${target}`, status: "call" };
+	const details = isRecord(result) ? result.details : undefined;
+	if (!isRecord(details) || details.monitor !== true) return undefined;
+	const id = nonEmptyString(details.monitor_id) ?? nonEmptyString(details.bash_id);
+	if (!id) return undefined;
+	return { text: `monitor armed ${id} · ${target}`, status: "armed" };
+}
+
+function scheduleWakeupLine(args: unknown, result: unknown): ProjectionLine | undefined {
+	const request = isRecord(args) ? args : {};
+	if (!result) {
+		if (request.stop === true) {
+			const reason = nonEmptyString(request.reason);
+			return reason ? { text: `schedule_wakeup stop: ${reason}`, status: "call" } : undefined;
+		}
+		const delay = request.delaySeconds;
+		if (!Number.isInteger(delay) || (delay as number) < 0) return undefined;
+		const noop = request.noop === true ? " noop" : "";
+		return { text: `schedule_wakeup schedule ${String(delay)}s${noop}`, status: "call" };
+	}
+	const details = isRecord(result) ? result.details : undefined;
+	if (!isRecord(details)) return undefined;
+	const reason = nonEmptyString(details.reason);
+	if (!reason) return undefined;
+	if (details.action === "scheduled") {
+		const delay = details.delaySeconds;
+		if (!Number.isInteger(delay) || (delay as number) < 0) return undefined;
+		const clamped = details.clamped === true ? " clamped" : "";
+		const noop = details.noop === true ? " noop" : "";
+		return { text: `schedule_wakeup scheduled ${String(delay)}s${clamped}${noop}: ${reason}`, status: "scheduled" };
+	}
+	if (details.action === "stopped") {
+		const ignored = details.ignoredFields;
+		if (ignored !== undefined && (!Array.isArray(ignored) || ignored.some((field) => typeof field !== "string"))) return undefined;
+		const suffix = Array.isArray(ignored) && ignored.length > 0 ? ` ignored ${ignored.join(", ")}` : "";
+		return { text: `schedule_wakeup stopped: ${reason}${suffix}`, status: "stopped" };
+	}
+	return undefined;
+}
+
+function countLabel(entries: readonly string[]): string | undefined {
+	if (entries.length === 0) return undefined;
+	const counts = new Map<string, number>();
+	for (const entry of entries) counts.set(entry, (counts.get(entry) ?? 0) + 1);
+	return [...counts].map(([state, n]) => `${state} ${n}`).join(" · ");
+}
+
+function schedulePromptLine(args: unknown, result: unknown): ProjectionLine | undefined {
+	const request = isRecord(args) ? args : {};
+	const action = request.action;
+	if (action !== "create" && action !== "list" && action !== "cancel") return undefined;
+	if (!result) return { text: `schedule_prompt ${action}`, status: "call" };
+	const details = isRecord(result) ? result.details : undefined;
+	if (!isRecord(details) || details.action !== action || !Array.isArray(details.jobs)) return undefined;
+	const jobs = details.jobs;
+	if (jobs.some((job) => !isRecord(job))) return undefined;
+	const states = countLabel(jobs.flatMap((job) => (isRecord(job) && typeof job.state === "string" ? [plainText(job.state)] : [])));
+	const jobCount = jobs.length;
+	if (action === "cancel") {
+		if (typeof details.inFlight !== "boolean") return undefined;
+		const first = jobs[0] as Record<string, unknown> | undefined;
+		const job = isRecord(first?.job) ? first.job : undefined;
+		const id = nonEmptyString(request.id) ?? nonEmptyString(job?.id);
+		if (!id) return undefined;
+		const prefix = details.inFlight ? "in-flight " : "";
+		return { text: `schedule_prompt ${prefix}cancel ${id}`, status: details.inFlight ? "in-flight" : "complete" };
+	}
+	const first = jobs[0] as Record<string, unknown> | undefined;
+	const onlyState = typeof first?.state === "string" ? plainText(first.state) : undefined;
+	const noun = `${onlyState && jobs.length === 1 ? `${onlyState} ` : ""}job${jobCount === 1 ? "" : "s"}`;
+	const stateText = jobs.length === 1 ? "" : states ? ` · ${states}` : "";
+	if (action === "list") return { text: `schedule_prompt list ${jobCount} ${noun}${stateText}`, status: "complete" };
+	if (typeof details.runnerAvailable !== "boolean") return undefined;
+	const job = isRecord(first?.job) ? first.job : undefined;
+	const due = nonEmptyString(job?.dueAt);
+	const prefix = details.runnerAvailable ? "" : "no-runner ";
+	return {
+		text: `schedule_prompt ${prefix}create ${jobCount} ${noun}${stateText}${due ? ` due ${due}` : ""}`,
+		status: onlyState ?? "queued",
+	};
+}
+
+function workflowNodeState(node: unknown): string | undefined {
+	if (!isRecord(node)) return undefined;
+	const state = node.state ?? node.status;
+	return typeof state === "string" ? state : undefined;
+}
+
+function workflowSnapshot(details: Record<string, unknown>, kind: string): { snapshot: Record<string, unknown>; status: string } | undefined {
+	const waited = kind === "waited";
+	const result = isRecord(details.result) ? details.result : undefined;
+	const snapshot = waited ? (isRecord(result?.snapshot) ? result.snapshot : undefined) : isRecord(details.snapshot) ? details.snapshot : undefined;
+	const reported = waited ? result?.status : snapshot?.status;
+	if (!snapshot || typeof reported !== "string" || !RUN_STATUSES.has(reported)) return undefined;
+	if (typeof snapshot.status !== "string" || !RUN_STATUSES.has(snapshot.status)) return undefined;
+	const counts = snapshot.counts;
+	if (!isRecord(counts)) return undefined;
+	for (const key of ["failed", "cancelled", "skipped"]) if (counts[key] !== 0) return undefined;
+	const nodes = snapshot.nodes;
+	if (!Array.isArray(nodes)) return undefined;
+	for (const node of nodes) {
+		if (!isRecord(node) || typeof node.id !== "string") return undefined;
+		const state = workflowNodeState(node);
+		if (!state || BAD_NODE_STATES.has(state)) return undefined;
+	}
+	return { snapshot, status: reported };
+}
+
+function workflowLine(args: unknown, result: unknown): ProjectionLine | undefined {
+	const request = isRecord(args) ? args : {};
+	const action = typeof request.action === "string" && WORKFLOW_ACTIONS.has(request.action) ? request.action : undefined;
+	if (!action) return undefined;
+	const nodeId = nonEmptyString(request.node_id);
+	if (!result) {
+		const definition = isRecord(request.definition) ? request.definition : undefined;
+		const target = action === "start" ? nonEmptyString(definition?.name) : nonEmptyString(request.run_id);
+		if (!target) return undefined;
+		if (action === "send" && !nodeId) return undefined;
+		return { text: `workflow ${action} ${target}${nodeId ? ` node ${nodeId}` : ""}`, status: "call" };
+	}
+	const details = isRecord(result) ? result.details : undefined;
+	if (!isRecord(details) || typeof details.kind !== "string" || !WORKFLOW_KINDS.has(details.kind)) return undefined;
+	const warnings = details.warnings;
+	if (warnings !== undefined && (!Array.isArray(warnings) || warnings.length > 0)) return undefined;
+	if (details.kind === "sent") {
+		const run = nonEmptyString(details.run_id) ?? nonEmptyString(request.run_id);
+		const delivery = nonEmptyString(details.delivery);
+		const node = nodeId ?? nonEmptyString(details.node_id);
+		if (!run || !delivery) return undefined;
+		return {
+			text: `workflow ${action} ${run} sent${node ? ` node ${node}` : ""} delivery ${delivery}`,
+			status: delivery === "queued" ? "queued" : "complete",
+		};
+	}
+	const lifecycle = workflowSnapshot(details, details.kind);
+	if (!lifecycle) return undefined;
+	const definition = isRecord(request.definition) ? request.definition : undefined;
+	const target =
+		nonEmptyString(definition?.name) ??
+		nonEmptyString(lifecycle.snapshot.name);
+	const run = nonEmptyString(details.run_id) ?? nonEmptyString(request.run_id) ?? nonEmptyString(lifecycle.snapshot.runId);
+	const shown = target ?? run;
+	if (!shown) return undefined;
+	const node = nodeId ?? nonEmptyString(details.node_id);
+	return {
+		text: `workflow ${action} ${shown} ${details.kind} ${lifecycle.status}${node ? ` node ${node}` : ""}`,
+		status: lifecycle.status === "completed" ? "complete" : lifecycle.status,
+	};
+}
+
+function poolItemStates(items: readonly unknown[]): string | undefined {
+	const states: string[] = [];
+	for (const item of items) {
+		if (!isRecord(item) || item.error !== undefined) return undefined;
+		const status = item.status;
+		if (typeof status !== "string" || status === "error" || status === "cancelled") return undefined;
+		states.push(plainText(status));
+	}
+	return countLabel(states);
+}
+
+function workpoolLine(args: unknown, result: unknown): ProjectionLine | undefined {
+	const request = isRecord(args) ? args : {};
+	const op = request.op;
+	if (typeof op !== "string" || !POOL_OPS.has(op)) return undefined;
+	if (!result) {
+		if (op === "create") {
+			const name = nonEmptyString(request.name);
+			return name ? { text: `workpool create ${name}`, status: "call" } : undefined;
+		}
+		if (op === "push") {
+			const pool = nonEmptyString(request.pool_id);
+			if (!pool || !Array.isArray(request.items)) return undefined;
+			return { text: `workpool push ${pool} · ${request.items.length} item${request.items.length === 1 ? "" : "s"}`, status: "call" };
+		}
+		if (op === "yield") {
+			if (!Array.isArray(request.results)) return undefined;
+			return { text: `workpool yield ${request.results.length} result${request.results.length === 1 ? "" : "s"}`, status: "call" };
+		}
+		const pool = nonEmptyString(request.pool_id);
+		return pool ? { text: `workpool ${op} ${pool}`, status: "call" } : undefined;
+	}
+	const details = isRecord(result) ? result.details : undefined;
+	if (!isRecord(details)) return undefined;
+	if (op === "push") {
+		const pool = nonEmptyString(details.pool_id);
+		if (!pool || !Array.isArray(details.item_ids)) return undefined;
+		return { text: `workpool push ${pool} · ${details.item_ids.length} item${details.item_ids.length === 1 ? "" : "s"}`, status: "queued" };
+	}
+	if (op === "yield") {
+		if (details.error !== undefined || !Array.isArray(details.results)) return undefined;
+		const results = details.results;
+		for (const entry of results) {
+			if (!isRecord(entry) || entry.error !== undefined) return undefined;
+			if (entry.status === "refused" || entry.status === "error") return undefined;
+		}
+		return { text: `workpool yield ${results.length} result${results.length === 1 ? "" : "s"}`, status: "complete" };
+	}
+	const pool = nonEmptyString(details.pool_id);
+	if (!pool || typeof details.status !== "string" || !POOL_STATUSES.has(details.status) || details.status === "cancelled") return undefined;
+	if (!Array.isArray(details.items)) return undefined;
+	const states = poolItemStates(details.items);
+	if (details.items.length > 0 && !states) return undefined;
+	const name = nonEmptyString(details.name) ?? pool;
+	const itemNoun = `${details.items.length} item${details.items.length === 1 ? "" : "s"}`;
+	const stateText = states ? ` (${states})` : "";
+	return {
+		text: `workpool ${op} ${name} ${details.status} · ${itemNoun}${stateText}`,
+		status: details.status,
+	};
+}
+
+function projectionLine(tool: string, args: unknown, result: unknown): ProjectionLine | undefined {
+	switch (tool) {
+		case "kill_bash":
+			return killBashLine(args, result);
+		case "monitor":
+			return monitorLine(args, result);
+		case "schedule_wakeup":
+			return scheduleWakeupLine(args, result);
+		case "schedule_prompt":
+			return schedulePromptLine(args, result);
+		case "workflow":
+			return workflowLine(args, result);
+		case "workpool":
+			return workpoolLine(args, result);
+		default:
+			return undefined;
 	}
 }
 
@@ -462,6 +749,12 @@ function dispatchSlot(
 function wrapDefinition(definition: unknown, name: unknown): void {
 	if (typeof name !== "string" || !definition || typeof definition !== "object") return;
 	const target = definition as Record<PropertyKey, unknown>;
+	if (PROJECTION_TOOLS.has(name)) {
+		if (target[WRAPPED] || target[PROJECTED]) return;
+		if (!projectionAdmissible(name, target)) return;
+		target[PROJECTED] = true;
+		return;
+	}
 	const plan = currentImpl()?.planFor(name);
 	if (!plan || target[WRAPPED]) return;
 	if (SLOTS.some(([slot]) => plan[slot] && typeof target[slot] !== "function")) return;
@@ -520,7 +813,14 @@ function textOnlyContent(result: unknown): boolean {
 function snapshotLine(snapshot: CardSnapshot | undefined, getTheme: () => Theme): MemberLine | undefined {
 	if (snapshot?.presentation !== "classic") return undefined;
 	const tool = snapshot.identity?.toolName;
-	if (typeof tool !== "string" || snapshot.identity?.toolDefinition?.[WRAPPED] !== true) return undefined;
+	if (typeof tool !== "string") return undefined;
+	const definition = snapshot.identity?.toolDefinition;
+	const projection =
+		PROJECTION_TOOLS.has(tool) &&
+		definition !== undefined &&
+		definition[PROJECTED] === true &&
+		projectionAdmissible(tool, definition);
+	if (definition?.[WRAPPED] !== true && !projection) return undefined;
 	const state = snapshot.state;
 	if (state?.result) {
 		if (resultFailed(state.result) || !textOnlyContent(state.result)) return undefined;
@@ -534,6 +834,11 @@ function snapshotLine(snapshot: CardSnapshot | undefined, getTheme: () => Theme)
 /** The non-eval card's one-line fold, exactly as its collapsed card draws it; undefined keeps the card out. */
 function foldedLine(tool: string, state: CardSnapshot["state"], theme: Theme, cwd: unknown): MemberLine | undefined {
 	const result = state?.result;
+	if (PROJECTION_TOOLS.has(tool)) {
+		const line = projectionLine(tool, state?.args, result);
+		if (!line) return undefined;
+		return { language: "", status: line.status, what: "", tool, text: line.text };
+	}
 	if (tool === "todo") {
 		const text = todoTitle(state?.args, (result as ToolResult)?.details, Boolean(result));
 		if (!text) return undefined;

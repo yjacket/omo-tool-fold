@@ -941,6 +941,334 @@ describe("todo grouping", () => {
 	});
 });
 
+describe("default control grouping", () => {
+	type ControlDef = {
+		execute: ReturnType<typeof mock>;
+		renderCall?: (...args: unknown[]) => unknown;
+		renderResult?: (...args: unknown[]) => unknown;
+	};
+	const textResult = (text: string) => ({ content: [{ type: "text", text }] });
+	const detailsResult = (details: Record<string, unknown>) => ({ details, content: [{ type: "text", text: "received" }] });
+	const poolId = `wp_${"a".repeat(32)}`;
+	const install = (host: ReturnType<typeof makeHost>, name: string, definition: ControlDef) => {
+		host.defs[name] = definition;
+		return definition;
+	};
+	const controlDefs = (host: ReturnType<typeof makeHost>) => {
+		const monitorCall = (...args: unknown[]) => ({ original: "monitor.call", args });
+		return {
+			kill_bash: install(host, "kill_bash", { execute: mock(() => undefined) }),
+			monitor: install(host, "monitor", { renderCall: monitorCall, execute: mock(() => undefined) }),
+			schedule_wakeup: install(host, "schedule_wakeup", { execute: mock(() => undefined) }),
+			schedule_prompt: install(host, "schedule_prompt", { execute: mock(() => undefined) }),
+			workflow: install(host, "workflow", { execute: mock(() => undefined) }),
+			workpool: install(host, "workpool", { execute: mock(() => undefined) }),
+			monitorCall,
+		};
+	};
+	const workflowSnapshot = (overrides: Record<string, unknown> = {}) => ({
+		kind: "snapshot",
+		run_id: "run_1",
+		snapshot: {
+			status: "running",
+			counts: { total: 2, completed: 1, failed: 0, cancelled: 0, skipped: 0 },
+			nodes: [
+				{ id: "a", state: "completed" },
+				{ id: "b", state: "running" },
+			],
+			...overrides,
+		},
+	});
+
+	test("each valid projection control joins a run with its target and installs no slots", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const defs = controlDefs(host);
+		const evalDef = session.getToolDefinition("eval");
+		const before = {
+			kill: session.getToolDefinition("kill_bash"),
+			monitor: session.getToolDefinition("monitor"),
+			wake: session.getToolDefinition("schedule_wakeup"),
+			prompt: session.getToolDefinition("schedule_prompt"),
+			workflow: session.getToolDefinition("workflow"),
+			workpool: session.getToolDefinition("workpool"),
+		};
+		for (const [name, def] of Object.entries(before)) {
+			const slots = def as Record<string, unknown>;
+			expect("renderResult" in slots).toBe(false);
+			if (name === "monitor") expect(slots.renderCall).toBe(defs.monitorCall);
+			else expect("renderCall" in slots).toBe(false);
+		}
+		for (const def of Object.values(defs)) if (typeof def === "object" && "execute" in def) def.execute.mockClear();
+
+		const cards = [
+			evalCard(evalDef, "a"),
+			toolCard("kill_bash", before.kill, "kill", textResult("Killed b1."), { bash_id: "b1" }),
+			toolCard(
+				"monitor",
+				before.monitor,
+				"monitor",
+				detailsResult({ monitor: true, monitor_id: "mon_1", bash_id: "bash_1" }),
+				{ description: "deploy log" },
+			),
+			toolCard(
+				"schedule_wakeup",
+				before.wake,
+				"wake",
+				detailsResult({ action: "scheduled", delaySeconds: 60, clamped: true, reason: "check deploy" }),
+				{ delaySeconds: 1, reason: "check deploy" },
+			),
+			toolCard(
+				"schedule_prompt",
+				before.prompt,
+				"prompt",
+				detailsResult({
+					action: "create",
+					jobs: [{ state: "pending", job: { id: "sch_1", dueAt: "2026-10-27T18:00:00Z" } }],
+					runnerAvailable: false,
+				}),
+				{ action: "create", prompt: "later" },
+			),
+			toolCard("workflow", before.workflow, "flow", detailsResult(workflowSnapshot()), { action: "snapshot", run_id: "run_1" }),
+			toolCard(
+				"workpool",
+				before.workpool,
+				"pool",
+				detailsResult({ pool_id: poolId, name: "build", status: "closing", items: [{ item_id: "wi_1", status: "queued" }] }),
+				{ op: "inspect", pool_id: poolId },
+			),
+			evalCard(evalDef, "b"),
+		];
+		const out = transcript(host, cards).project();
+		expect(out.length).toBe(1);
+		const lines = (out[0] as Grouped).render(80);
+		const joined = lines.join("\n");
+		expect(joined).toContain("kill_bash b1: Killed b1.");
+		expect(joined).toContain("monitor armed mon_1 · deploy log");
+		expect(joined).toContain("schedule_wakeup scheduled 60s clamped: check deploy");
+		expect(joined).toContain("schedule_prompt no-runner create 1 pending job");
+		expect(joined).toContain("workflow snapshot run_1 snapshot running");
+		expect(joined).toContain(`workpool inspect build closing · 1 item`);
+		expect(joined).not.toContain("1s");
+		for (const name of ["kill_bash", "monitor", "schedule_wakeup", "schedule_prompt", "workflow", "workpool"] as const) {
+			defs[name].execute.mockClear();
+		}
+		expect(host.calls.length).toBe(0);
+		for (const name of ["kill_bash", "monitor", "schedule_wakeup", "schedule_prompt", "workflow", "workpool"] as const) {
+			expect(defs[name].execute.mock.calls.length).toBe(0);
+		}
+	});
+
+	test("a lone projection card stays the same object with its native view", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		install(host, "kill_bash", { execute: mock(() => undefined) });
+		const def = session.getToolDefinition("kill_bash");
+		const card = toolCard("kill_bash", def, "only", textResult("Killed b1."), { bash_id: "b1" });
+		const { im, project } = transcript(host, [card]);
+		const out = project();
+		expect(out).toBe(im.chatContainer.children);
+		expect(out[0]).toBe(card);
+	});
+
+	test("armed, queued and closing labels stay distinguishable from complete", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const defs = controlDefs(host);
+		const monitor = session.getToolDefinition("monitor");
+		const prompt = session.getToolDefinition("schedule_prompt");
+		const pool = session.getToolDefinition("workpool");
+		const flow = session.getToolDefinition("workflow");
+		const cards = [
+			toolCard("monitor", monitor, "m", detailsResult({ monitor: true, monitor_id: "mon_2" }), { description: "watch" }),
+			toolCard(
+				"schedule_prompt",
+				prompt,
+				"p",
+				detailsResult({ action: "create", jobs: [{ state: "pending", job: { id: "sch_2" } }], runnerAvailable: true }),
+				{ action: "create" },
+			),
+			toolCard(
+				"workpool",
+				pool,
+				"w",
+				detailsResult({ pool_id: poolId, status: "closing", items: [{ item_id: "wi_2", status: "queued" }] }),
+				{ op: "close", pool_id: poolId },
+			),
+			toolCard("workflow", flow, "f", detailsResult(workflowSnapshot()), { action: "snapshot", run_id: "run_1" }),
+		];
+		const joined = (transcript(host, cards).project()[0] as Grouped).render(80).join("\n");
+		expect(joined).toContain("monitor armed mon_2");
+		expect(joined).toContain("1 pending job");
+		expect(joined).toContain("closing");
+		expect(joined).toContain("workflow snapshot run_1 snapshot running");
+		expect(joined).not.toContain("complete");
+		for (const def of Object.values(defs)) if (typeof def === "object" && "execute" in def) def.execute.mockClear();
+	});
+
+	test("schedule_prompt cancel flags in-flight delivery", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		install(host, "schedule_prompt", { execute: mock(() => undefined) });
+		const def = session.getToolDefinition("schedule_prompt");
+		const card = toolCard(
+			"schedule_prompt",
+			def,
+			"cancel",
+			detailsResult({ action: "cancel", jobs: [{ state: "pending", job: { id: "sch_3" } }], inFlight: true }),
+			{ action: "cancel", id: "sch_3" },
+		);
+		const other = toolCard("schedule_prompt", def, "cancel2", detailsResult({ action: "cancel", jobs: [], inFlight: false }), { action: "cancel", id: "sch_4" });
+		const joined = (transcript(host, [card, other]).project()[0] as Grouped).render(80).join("\n");
+		expect(joined).toContain("schedule_prompt in-flight cancel sch_3");
+		expect(joined).toContain("schedule_prompt cancel sch_4");
+	});
+
+	test("custom result renderers, missing and malformed controls stay native", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const ownCall = (...args: unknown[]) => ({ original: "kill.call", args });
+		const ownResult = (...args: unknown[]) => ({ original: "kill.result", args });
+		install(host, "kill_bash", { renderCall: ownCall, renderResult: ownResult, execute: mock(() => undefined) });
+		const custom = session.getToolDefinition("kill_bash");
+		expect(custom.renderCall).toBe(ownCall);
+		expect(custom.renderResult).toBe(ownResult);
+
+		install(host, "monitor", { renderCall: () => ({}), execute: mock(() => undefined) });
+		const monitor = session.getToolDefinition("monitor");
+		install(host, "schedule_wakeup", { execute: mock(() => undefined) });
+		const wake = session.getToolDefinition("schedule_wakeup");
+		install(host, "schedule_prompt", { execute: mock(() => undefined) });
+		const prompt = session.getToolDefinition("schedule_prompt");
+		install(host, "workflow", { execute: mock(() => undefined) });
+		const flow = session.getToolDefinition("workflow");
+		install(host, "workpool", { execute: mock(() => undefined) });
+		const pool = session.getToolDefinition("workpool");
+
+		const cases: { label: string; tool: string; definition: unknown; args: unknown; result: unknown }[] = [
+			{ label: "custom", tool: "kill_bash", definition: custom, args: { bash_id: "b1" }, result: textResult("Killed b1.") },
+			{ label: "missing", tool: "kill_bash", definition: undefined, args: { bash_id: "b1" }, result: textResult("Killed b1.") },
+			{ label: "human", tool: "monitor", definition: monitor, args: { human_input: true, description: "chat" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
+			{ label: "human-pending", tool: "monitor", definition: monitor, args: { human_input: true, description: "chat" }, result: undefined },
+			{ label: "rearm", tool: "monitor", definition: monitor, args: { action: "rearm", bash_id: "mon_1" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
+			{ label: "unknown-action", tool: "monitor", definition: monitor, args: { action: "brand-new" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
+			{ label: "monitor-shape", tool: "monitor", definition: monitor, args: { description: "chat" }, result: detailsResult({ monitor: true }) },
+			{ label: "wake-unknown", tool: "schedule_wakeup", definition: wake, args: { reason: "x" }, result: detailsResult({ action: "brand-new", reason: "x" }) },
+			{ label: "prompt-shape", tool: "schedule_prompt", definition: prompt, args: { action: "create" }, result: detailsResult({ action: "create", jobs: [] }) },
+			{ label: "workflow-error", tool: "workflow", definition: flow, args: { action: "snapshot", run_id: "run_1" }, result: detailsResult({ kind: "error", error: { code: "run_not_found" } }) },
+			{
+				label: "workflow-child-failed",
+				tool: "workflow",
+				definition: flow,
+				args: { action: "snapshot", run_id: "run_1" },
+				result: detailsResult(workflowSnapshot({ counts: { total: 2, completed: 1, failed: 1, cancelled: 0, skipped: 0 } })),
+			},
+			{ label: "pool-item-error", tool: "workpool", definition: pool, args: { op: "inspect", pool_id: poolId }, result: detailsResult({ pool_id: poolId, status: "open", items: [{ item_id: "wi_1", status: "completed", error: { code: "x" } }] }) },
+			{ label: "pool-refused", tool: "workpool", definition: pool, args: { op: "yield", results: [] }, result: detailsResult({ pool_id: poolId, results: [{ key: "k", status: "refused", error: { code: "yield_conflict" } }] }) },
+			{ label: "pool-unknown", tool: "workpool", definition: pool, args: { op: "brand-new" }, result: detailsResult({ pool_id: poolId }) },
+			{ label: "media", tool: "kill_bash", definition: session.getToolDefinition("kill_bash"), args: { bash_id: "b1" }, result: { content: [{ type: "image", data: "x", mimeType: "image/png" }] } },
+		];
+		for (const { label, tool, definition, args, result } of cases) {
+			const unsafe = toolCard(tool, definition, label, result, args);
+			const out = transcript(host, [evalCard(evalDef, `a-${label}`), unsafe, evalCard(evalDef, `b-${label}`), evalCard(evalDef, `c-${label}`)]).project();
+			expect(out.length).toBe(3);
+			expect(out[1]).toBe(unsafe);
+			expect((out[2] as Grouped).render(80)[1]).toBe("• Ran 2 evals");
+		}
+	});
+
+	test("start and detached receipts keep their live lifecycle", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		install(host, "workflow", { execute: mock(() => undefined) });
+		const def = session.getToolDefinition("workflow");
+		const snapshot = {
+			status: "running",
+			counts: { total: 1, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+			nodes: [{ id: "a", state: "running" }],
+		};
+		const cards = [
+			toolCard("workflow", def, "start", detailsResult({ kind: "started", run_id: "run_1", snapshot, warnings: [] }), { action: "start", definition: { name: "build" } }),
+			toolCard("workflow", def, "detach", detailsResult({ kind: "detached", run_id: "run_1", snapshot }), { action: "wait", run_id: "run_1" }),
+		];
+		const lines = (transcript(host, cards).project()[0] as Grouped).render(80);
+		const joined = lines.join("\n");
+		expect(joined).toContain("workflow start build started running");
+		expect(joined).toContain("workflow wait run_1 detached running");
+		expect(joined).toContain("Running 2 tools");
+		expect(joined).not.toContain("Ran 2");
+		expect(joined).not.toContain("complete");
+	});
+
+	test("control ids and workflow names drop terminal escapes and flatten lines", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		install(host, "kill_bash", { execute: mock(() => undefined) });
+		install(host, "workflow", { execute: mock(() => undefined) });
+		const kill = session.getToolDefinition("kill_bash");
+		const flow = session.getToolDefinition("workflow");
+		const snapshot = {
+			status: "running",
+			runId: "run_1",
+			name: "run",
+			counts: { total: 0, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+			nodes: [],
+		};
+		const cards = [
+			toolCard("kill_bash", kill, "kill", textResult("Killed b1."), { bash_id: "b1\u001b[31m\u0007" }),
+			toolCard(
+				"workflow",
+				flow,
+				"flow",
+				detailsResult({ kind: "started", run_id: "run_1", snapshot, warnings: [] }),
+				{ action: "start", definition: { name: "build\u001b]0;pwned\u0007 name\nsecond" } },
+			),
+		];
+		const rendered = (transcript(host, cards).project()[0] as Grouped).render(80).join("\n");
+		expect(rendered).toContain("kill_bash b1: Killed b1.");
+		expect(rendered).toContain("workflow start build name second started running");
+		expect(rendered).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
+	});
+
+	test("a definition that gains a result renderer leaves the projection path", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		install(host, "workflow", { execute: mock(() => undefined) });
+		const def = session.getToolDefinition("workflow");
+		const snapshot = {
+			status: "running",
+			counts: { total: 0, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+			nodes: [],
+		};
+		const card = toolCard("workflow", def, "flow", detailsResult({ kind: "snapshot", run_id: "run_1", snapshot }), { action: "snapshot", run_id: "run_1" });
+		const { im, project } = transcript(host, [card]);
+		expect(project()).toBe(im.chatContainer.children);
+		(def as Record<string, unknown>).renderResult = () => ({ original: "late.result" });
+		const first = toolCard("workflow", def, "first", detailsResult({ kind: "snapshot", run_id: "run_1", snapshot }), { action: "snapshot", run_id: "run_1" });
+		const second = toolCard("workflow", def, "second", detailsResult({ kind: "snapshot", run_id: "run_1", snapshot }), { action: "snapshot", run_id: "run_1" });
+		const late = transcript(host, [first, second]);
+		expect(late.project()).toBe(late.im.chatContainer.children);
+	});
+
+	test("bash_input ignored keys and bash_resize no-op remain native", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const input = install(host, "bash_input", { execute: mock(() => undefined) });
+		const resize = install(host, "bash_resize", { execute: mock(() => undefined) });
+		const inputDef = session.getToolDefinition("bash_input");
+		const resizeDef = session.getToolDefinition("bash_resize");
+		const cards = [
+			toolCard("bash_input", inputDef, "input", { details: {}, isError: false }, { bash_id: "b1", input: "x", keys: ["nope"] }),
+			toolCard("bash_resize", resizeDef, "resize", { details: {}, isError: false }, { bash_id: "b1", cols: 80, rows: 40 }),
+		];
+		const { im, project } = transcript(host, cards);
+		expect(project()).toBe(im.chatContainer.children);
+		expect(input.execute.mock.calls.length).toBe(0);
+		expect(resize.execute.mock.calls.length).toBe(0);
+	});
+});
+
 describe("tool-fold history window", () => {
 	test("expansion resets only the non-owning display and preserves native return and source children", async () => {
 		const host = makeHost();
