@@ -538,7 +538,7 @@ function scheduleWakeupLine(args: unknown, result: unknown): ProjectionLine | un
 		const ignored = details.ignoredFields;
 		if (ignored !== undefined && (!Array.isArray(ignored) || ignored.some((field) => typeof field !== "string"))) return undefined;
 		const suffix = Array.isArray(ignored) && ignored.length > 0 ? ` ignored ${ignored.join(", ")}` : "";
-		return { text: `schedule_wakeup stopped: ${reason}${suffix}`, status: "stopped" };
+		return { text: `schedule_wakeup stopped: ${reason}${suffix}`, status: "complete" };
 	}
 	return undefined;
 }

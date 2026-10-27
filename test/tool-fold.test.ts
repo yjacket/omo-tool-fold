@@ -1098,6 +1098,34 @@ describe("default control grouping", () => {
 		}
 	});
 
+	test("a stopped wakeup receipt settles while a scheduled one stays running", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		install(host, "schedule_wakeup", { execute: mock(() => undefined) });
+		const wake = session.getToolDefinition("schedule_wakeup");
+		const evalDef = session.getToolDefinition("eval");
+		const stopped = toolCard(
+			"schedule_wakeup",
+			wake,
+			"stopped",
+			detailsResult({ action: "stopped", reason: "deploy finished" }),
+			{ stop: true, reason: "deploy finished" },
+		);
+		const stoppedLines = (transcript(host, [evalCard(evalDef, "a"), stopped]).project()[0] as Grouped).render(80);
+		expect(stoppedLines[1]).toContain("Ran 2 tools");
+		expect(stoppedLines.join("\n")).toContain("schedule_wakeup stopped: deploy finished");
+
+		const scheduled = toolCard(
+			"schedule_wakeup",
+			wake,
+			"scheduled",
+			detailsResult({ action: "scheduled", delaySeconds: 60, reason: "check deploy" }),
+			{ delaySeconds: 60, reason: "check deploy" },
+		);
+		const scheduledLines = (transcript(host, [evalCard(evalDef, "b"), scheduled]).project()[0] as Grouped).render(80);
+		expect(scheduledLines[1]).toContain("Running 2 tools");
+	});
+
 	test("a lone projection card stays the same object with its native view", async () => {
 		const host = makeHost();
 		const { session } = await load(host);
