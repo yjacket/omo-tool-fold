@@ -777,8 +777,8 @@ describe("grouping eligibility", () => {
 		host.defs.kill_bash = { execute: mock(() => undefined) };
 		const killDef = session.getToolDefinition("kill_bash");
 		const kill = [
-			toolCard("kill_bash", killDef, "grok kill a", { details: {} }, { bash_id: "b1" }, "grok"),
-			toolCard("kill_bash", killDef, "grok kill b", { details: {} }, { bash_id: "b2" }, "grok"),
+			toolCard("kill_bash", killDef, "grok kill a", textResult(), { bash_id: "b1" }, "grok"),
+			toolCard("kill_bash", killDef, "grok kill b", textResult(), { bash_id: "b2" }, "grok"),
 		];
 		const killOut = transcript(host, kill);
 		expect(killOut.project()).toBe(killOut.im.chatContainer.children);
@@ -1214,15 +1214,23 @@ describe("default control grouping", () => {
 				label: "workflow-run-failed",
 				tool: "workflow",
 				definition: flow,
-				args: { action: "snapshot", run_id: "run_1" },
-				result: detailsResult(workflowSnapshot({ status: "failed" })),
+				args: { action: "wait", run_id: "run_1" },
+				result: detailsResult({
+					...workflowSnapshot(),
+					kind: "waited",
+					result: { status: "failed", snapshot: { ...workflowSnapshot().snapshot } },
+				}),
 			},
 			{
 				label: "workflow-run-cancelled",
 				tool: "workflow",
 				definition: flow,
-				args: { action: "snapshot", run_id: "run_1" },
-				result: detailsResult(workflowSnapshot({ status: "cancelled" })),
+				args: { action: "wait", run_id: "run_1" },
+				result: detailsResult({
+					...workflowSnapshot(),
+					kind: "waited",
+					result: { status: "cancelled", snapshot: { ...workflowSnapshot().snapshot } },
+				}),
 			},
 			{ label: "pool-item-error", tool: "workpool", definition: pool, args: { op: "inspect", pool_id: poolId }, result: detailsResult({ pool_id: poolId, status: "open", items: [{ item_id: "wi_1", status: "completed", error: { code: "x" } }] }) },
 			{ label: "pool-refused", tool: "workpool", definition: pool, args: { op: "yield", results: [] }, result: detailsResult({ pool_id: poolId, results: [{ key: "k", status: "refused" }] }) },
