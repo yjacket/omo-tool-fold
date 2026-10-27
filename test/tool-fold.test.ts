@@ -1729,3 +1729,276 @@ describe("collapsed notice hiding", () => {
 		expect(project()).toBe(im.chatContainer.children);
 	});
 });
+
+describe("audited renderer grouping", () => {
+	type Shape = "two" | "none" | "call";
+	type CatalogRow = { name: string; expected: "eligible" | "native"; shape: Shape; args?: Record<string, unknown>; line?: string; cwd?: string };
+
+	/** Independent catalog snapshot: every one of the 79 observed names and its disposition. */
+	const CATALOG: readonly CatalogRow[] = [
+		{ name: "read", expected: "native", shape: "two" },
+		{ name: "bash", expected: "eligible", shape: "two", args: { command: "echo hi" }, line: "bash echo hi" },
+		{ name: "powershell", expected: "eligible", shape: "two", args: { command: "Get-Date" }, line: "powershell Get-Date" },
+		{ name: "edit", expected: "eligible", shape: "two", args: { path: "a.ts" }, line: "edit a.ts" },
+		{ name: "write", expected: "eligible", shape: "two", args: {}, line: "write" },
+		{ name: "grep", expected: "native", shape: "two" },
+		{ name: "find", expected: "native", shape: "two" },
+		{ name: "glob", expected: "eligible", shape: "two", args: { pattern: "**/*.ts", path: "C:/work/project/src" }, line: "glob **/*.ts in src", cwd: "C:/work/project" },
+		{ name: "ls", expected: "native", shape: "two" },
+		{ name: "apply_patch", expected: "eligible", shape: "two", args: { input: "*** Begin Patch\n*** Update File: a.ts\n@@\n*** End Patch" }, line: "apply_patch a.ts" },
+		{ name: "request_user_input", expected: "native", shape: "two" },
+		{ name: "ask_user_question", expected: "native", shape: "two" },
+		{ name: "generate_image", expected: "native", shape: "two" },
+		{ name: "todo", expected: "eligible", shape: "two", args: { op: "view" }, line: "todo view" },
+		{ name: "bash_output", expected: "eligible", shape: "two", args: {}, line: "bash_output" },
+		{ name: "bash_input", expected: "native", shape: "none" },
+		{ name: "bash_resize", expected: "native", shape: "none" },
+		{ name: "kill_bash", expected: "eligible", shape: "none", args: { bash_id: "b1" }, line: "kill_bash b1" },
+		{ name: "monitor", expected: "eligible", shape: "call", args: { description: "watch build" }, line: "monitor watch build" },
+		{ name: "web_search", expected: "eligible", shape: "two", args: {}, line: "web_search" },
+		{ name: "$web_search", expected: "native", shape: "two" },
+		{ name: "webfetch", expected: "eligible", shape: "two", args: {}, line: "webfetch" },
+		{ name: "read_video", expected: "native", shape: "two" },
+		{ name: "look_at", expected: "eligible", shape: "two", args: {}, line: "look_at" },
+		{ name: "create_goal", expected: "eligible", shape: "two", args: {}, line: "create_goal" },
+		{ name: "update_goal", expected: "eligible", shape: "two", args: {}, line: "update_goal" },
+		{ name: "get_goal", expected: "eligible", shape: "two", args: {}, line: "get_goal" },
+		{ name: "schedule_wakeup", expected: "eligible", shape: "none", args: { delaySeconds: 60 }, line: "schedule_wakeup schedule 60s" },
+		{ name: "schedule_prompt", expected: "eligible", shape: "none", args: { action: "list" }, line: "schedule_prompt list" },
+		{ name: "show_html_page", expected: "native", shape: "two" },
+		{ name: "tool_search", expected: "eligible", shape: "two", args: {}, line: "tool_search" },
+		{ name: "mcp__ast_grep_rewrite", expected: "eligible", shape: "two", args: { pattern: "foo", paths: ["src/a.ts"], apply: true }, line: "mcp__ast_grep_rewrite foo src/a.ts apply" },
+		{ name: "mcp__ast_grep_scan", expected: "eligible", shape: "two", args: { ruleFile: "rule.yml", paths: ["src"] }, line: "mcp__ast_grep_scan rule.yml preview" },
+		{ name: "mcp__ast_grep_search", expected: "eligible", shape: "two", args: { pattern: "bar", paths: ["src/b.ts"] }, line: "mcp__ast_grep_search bar src/b.ts preview" },
+		{ name: "mcp_context7_query-docs", expected: "eligible", shape: "two", args: { libraryId: "/bun/bun", query: "fetch" }, line: "mcp_context7_query-docs /bun/bun fetch" },
+		{ name: "mcp_context7_resolve-library-id", expected: "eligible", shape: "two", args: { libraryName: "bun", query: "hono" }, line: "mcp_context7_resolve-library-id bun hono" },
+		{ name: "mcp_grep_app_searchGitHub", expected: "eligible", shape: "two", args: { query: "useState", repo: "facebook/react" }, line: "mcp_grep_app_searchGitHub useState facebook/react" },
+		{ name: "eval", expected: "eligible", shape: "two", args: { summary: "matrix" } },
+		{ name: "onboarding_session_history", expected: "native", shape: "none" },
+		{ name: "onboarding_understand", expected: "native", shape: "none" },
+		{ name: "onboarding_memory_apply", expected: "native", shape: "none" },
+		{ name: "lsp_diagnostics", expected: "eligible", shape: "two", args: {}, line: "lsp_diagnostics" },
+		{ name: "lsp_goto_definition", expected: "eligible", shape: "two", args: {}, line: "lsp_goto_definition" },
+		{ name: "lsp_find_references", expected: "eligible", shape: "two", args: {}, line: "lsp_find_references" },
+		{ name: "lsp_symbols", expected: "eligible", shape: "two", args: {}, line: "lsp_symbols" },
+		{ name: "lsp_prepare_rename", expected: "eligible", shape: "two", args: {}, line: "lsp_prepare_rename" },
+		{ name: "lsp_rename", expected: "eligible", shape: "two", args: {}, line: "lsp_rename" },
+		{ name: "computer", expected: "native", shape: "two" },
+		{ name: "omo_browser_bridge", expected: "native", shape: "two" },
+		{ name: "task", expected: "eligible", shape: "two", args: {}, line: "task" },
+		{ name: "task_send", expected: "eligible", shape: "two", args: {}, line: "task_send" },
+		{ name: "task_cancel", expected: "eligible", shape: "two", args: {}, line: "task_cancel" },
+		{ name: "task_output", expected: "eligible", shape: "two", args: {}, line: "task_output" },
+		{ name: "workflow", expected: "eligible", shape: "none", args: { action: "start", definition: { name: "build" } }, line: "workflow start build" },
+		{ name: "workpool", expected: "eligible", shape: "none", args: { op: "create", name: "pool" }, line: "workpool create pool" },
+		{ name: "team_create", expected: "eligible", shape: "two", args: {}, line: "team_create" },
+		{ name: "team_delete", expected: "eligible", shape: "two", args: {}, line: "team_delete" },
+		{ name: "task_create", expected: "eligible", shape: "two", args: {}, line: "task_create" },
+		{ name: "task_get", expected: "eligible", shape: "two", args: {}, line: "task_get" },
+		{ name: "task_list", expected: "eligible", shape: "two", args: {}, line: "task_list" },
+		{ name: "task_update", expected: "eligible", shape: "two", args: {}, line: "task_update" },
+		{ name: "thread_create", expected: "eligible", shape: "none", args: { name: "thr_1" }, line: "thread_create thr_1" },
+		{ name: "thread_list", expected: "eligible", shape: "none", args: {}, line: "thread_list" },
+		{ name: "thread_read", expected: "eligible", shape: "none", args: { thread: "thr_1" }, line: "thread_read thr_1" },
+		{ name: "thread_send", expected: "eligible", shape: "none", args: { thread: "thr_1", summary: "s" }, line: "thread_send thr_1 · s" },
+		{ name: "thread_interrupt", expected: "eligible", shape: "none", args: { thread: "thr_1", turn_id: "turn_7" }, line: "thread_interrupt thr_1 turn turn_7" },
+		{ name: "thread_handoff", expected: "eligible", shape: "none", args: { thread: "thr_1", summary: "s" }, line: "thread_handoff thr_1 · s" },
+		{ name: "thread_rename", expected: "eligible", shape: "none", args: { thread: "thr_1", name: "new" }, line: "thread_rename thr_1 to new" },
+		{ name: "thread_set_model", expected: "eligible", shape: "none", args: { thread: "thr_1", provider: "anthropic", model: "claude" }, line: "thread_set_model thr_1 anthropic/claude" },
+		{ name: "thread_set_reasoning", expected: "eligible", shape: "none", args: { thread: "thr_1", level: "high" }, line: "thread_set_reasoning thr_1 high" },
+		{ name: "thread_bind", expected: "eligible", shape: "none", args: { platform: "discord", chat_id: "chat_1" }, line: "thread_bind discord/chat_1" },
+		{ name: "thread_unbind", expected: "eligible", shape: "none", args: { binding_id: "b1" }, line: "thread_unbind b1" },
+		{ name: "thread_rebind", expected: "eligible", shape: "none", args: { binding_id: "b1", session: "thr_2" }, line: "thread_rebind b1 to thr_2" },
+		{ name: "thread_bindings", expected: "eligible", shape: "none", args: {}, line: "thread_bindings" },
+		{ name: "thread_report", expected: "eligible", shape: "none", args: { kind: "milestone", binding_id: "b1" }, line: "thread_report milestone b1" },
+		{ name: "thread_outbox", expected: "eligible", shape: "none", args: { binding_id: "b1" }, line: "thread_outbox b1" },
+		{ name: "thread_outbox_ack", expected: "eligible", shape: "none", args: { binding_id: "b1", cursor: 4 }, line: "thread_outbox_ack b1 · cursor 4" },
+		{ name: "thread_answer", expected: "native", shape: "none" },
+		{ name: "memory", expected: "eligible", shape: "two", args: {}, line: "memory" },
+	];
+
+	const catalogDef = (shape: Shape): Record<string, unknown> => {
+		if (shape === "two") return { renderCall() {}, renderResult() {} };
+		if (shape === "call") return { renderCall() {} };
+		return {};
+	};
+
+	function installMocks(host: ReturnType<typeof makeHost>, names: readonly string[]) {
+		const calls: string[] = [];
+		for (const name of names) {
+			host.defs[name] = {
+				renderCall: () => {
+					calls.push(`${name}.call`);
+					return { original: `${name}.call` };
+				},
+				renderResult: () => {
+					calls.push(`${name}.result`);
+					return { original: `${name}.result` };
+				},
+				execute: mock(() => undefined),
+			};
+		}
+		return calls;
+	}
+
+	test("bash, glob and full MCP cards join with their audited summaries", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const names = [
+			"bash",
+			"glob",
+			"mcp__ast_grep_search",
+			"mcp__ast_grep_rewrite",
+			"mcp_context7_query-docs",
+			"mcp_grep_app_searchGitHub",
+		];
+		const original = installMocks(host, names);
+		const defs = Object.fromEntries(names.map((name) => [name, session.getToolDefinition(name)]));
+		const cwd = "C:/work/project";
+		const textResult = (text: string) => ({ content: [{ type: "text", text }] });
+		const mcpResult = (preview: string) => ({
+			details: { server: "srv", tool: "tool", preview },
+			content: [{ type: "text", text: "raw" }],
+		});
+
+		expect((defs.bash.renderCall({ command: "npm test" }, theme, {}) as FakeTruncatedText).text).toBe("bash npm test");
+		expect((defs.glob.renderCall({ pattern: "*.ts" }, theme, { cwd }) as FakeTruncatedText).text).toBe("glob *.ts in .");
+
+		const cards = [
+			evalCard(session.getToolDefinition("eval"), "lead"),
+			toolCard("bash", defs.bash, "bash", { ...textResult("launched"), details: { bash_id: "b_1", background: true } }, { description: "build", command: "npm run build" }, "classic", cwd),
+			toolCard("glob", defs.glob, "glob", textResult("src/a.ts"), { pattern: "**/*.ts", path: "C:/work/project/src" }, "classic", cwd),
+			toolCard("mcp__ast_grep_search", defs.mcp__ast_grep_search, "search", mcpResult("src/a.ts:1: foo"), { pattern: "foo", paths: ["src/a.ts"], apply: false }),
+			toolCard("mcp__ast_grep_rewrite", defs.mcp__ast_grep_rewrite, "rewrite", mcpResult("2 replacements"), { pattern: "foo", paths: ["src/a.ts"], apply: true }),
+			toolCard("mcp_context7_query-docs", defs["mcp_context7_query-docs"], "docs", mcpResult("(empty result)"), { libraryId: "/bun/bun", query: "fetch" }),
+			toolCard("mcp_grep_app_searchGitHub", defs.mcp_grep_app_searchGitHub, "github", mcpResult("react/React:1"), { query: "useState", repo: "facebook/react" }),
+		];
+		const out = transcript(host, cards).project();
+		expect(out.length).toBe(1);
+		const lines = (out[0] as Grouped).render(240);
+		expect(lines[1]).toBe("• Ran 7 tools · eval 1 · bash 1 · glob 1 · mcp__ast_grep_search 1 · mcp__ast_grep_rewrite 1 · mcp_context7_query-docs 1 · mcp_grep_app_searchGitHub 1");
+		expect(lines.slice(3)).toEqual([
+			"    bash build background b_1",
+			"    glob **/*.ts in src",
+			"    mcp__ast_grep_search foo src/a.ts preview · src/a.ts:1: foo",
+			"    mcp__ast_grep_rewrite foo src/a.ts apply · 2 replacements",
+			"    mcp_context7_query-docs /bun/bun fetch · (empty result)",
+			"    mcp_grep_app_searchGitHub useState facebook/react · react/React:1",
+		]);
+		expect(original).toEqual([]);
+	});
+
+	test("a background handle is a receipt, not an inferred completion", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		installMocks(host, ["bash"]);
+		const bash = session.getToolDefinition("bash");
+		const result = (details: Record<string, unknown>) => ({ details, content: [{ type: "text", text: "running" }] });
+		for (const details of [{ bash_id: "b_1" }, { background: true }]) {
+			const line = (bash.renderResult(result(details), {}, theme, { args: { command: "sleep 99" } }) as FakeTruncatedText).text;
+			expect(line).toBe("bash sleep 99");
+		}
+		const background = bash.renderResult(result({ bash_id: "b_1", background: true }), {}, theme, { args: { command: "sleep 99" } });
+		expect((background as FakeTruncatedText).text).toBe("bash sleep 99 background b_1");
+		expect((background as FakeTruncatedText).text).not.toContain("✓");
+	});
+
+	test("MCP stubs, refusals, images, missing metadata and unknown names stay native", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const stubCall = () => ({ original: "stub.call" });
+		host.defs["mcp_context7_query-docs"] = { renderCall: stubCall };
+		const stub = session.getToolDefinition("mcp_context7_query-docs");
+		expect(stub.renderCall).toBe(stubCall);
+
+		const fullNames = ["mcp__ast_grep_search"];
+		installMocks(host, fullNames);
+		const full = session.getToolDefinition("mcp__ast_grep_search");
+		const args = { pattern: "foo", paths: ["src/a.ts"] };
+		const image = { type: "image", data: "abc", mimeType: "image/png" };
+		const cases: { label: string; result: unknown; tool: string; definition: unknown; mode: "member" | "native" }[] = [
+			{ label: "stub", result: { content: [{ type: "text", text: "not active" }] }, tool: "mcp_context7_query-docs", definition: stub, mode: "native" },
+			{ label: "refusal", result: { details: { error: { kind: "refused" }, preview: "refused", server: "srv", tool: "search" }, content: [{ type: "text", text: "x" }] }, tool: "mcp__ast_grep_search", definition: full, mode: "member" },
+			{ label: "image", result: { details: { server: "srv", tool: "search", preview: "[image]" }, content: [image] }, tool: "mcp__ast_grep_search", definition: full, mode: "member" },
+			{ label: "missing-metadata", result: { details: { preview: "x" }, content: [{ type: "text", text: "x" }] }, tool: "mcp__ast_grep_search", definition: full, mode: "member" },
+			{ label: "non-string-preview", result: { details: { server: "srv", tool: "search", preview: 4 }, content: [{ type: "text", text: "x" }] }, tool: "mcp__ast_grep_search", definition: full, mode: "member" },
+			{ label: "renderer-error", result: { isError: true, details: { server: "srv", tool: "search", preview: "x" } }, tool: "mcp__ast_grep_search", definition: full, mode: "member" },
+		];
+		const evalDef = session.getToolDefinition("eval");
+		for (const { label, result, tool, definition, mode } of cases) {
+			const unsafe = toolCard(tool, definition, label, result, args);
+			const out = transcript(host, [evalCard(evalDef, `${label} a`), unsafe, evalCard(evalDef, `${label} b`), evalCard(evalDef, `${label} c`)]).project();
+			expect(out.length).toBe(3);
+			expect(out[1]).toBe(unsafe);
+			if (mode === "member") {
+				expect(full.renderResult(result, {}, theme, { args })).toEqual({ original: "mcp__ast_grep_search.result" });
+			}
+		}
+
+		const unknownName = "novel_future_tool";
+		host.defs[unknownName] = { renderCall() {}, renderResult() {} };
+		const unknown = toolCard(unknownName, session.getToolDefinition(unknownName), "unknown", { details: {} }, {});
+		const unknownOut = transcript(host, [evalCard(evalDef, "u a"), unknown, evalCard(evalDef, "u b"), evalCard(evalDef, "u c")]).project();
+		expect(unknownOut.length).toBe(3);
+		expect(unknownOut[1]).toBe(unknown);
+
+		host.defs.$web_search = { renderCall() {}, renderResult() {} };
+		const record = { details: { arbitrary: { echo: true } }, content: [{ type: "text", text: "provider echo" }] };
+		const before = structuredClone(record);
+		const echo = toolCard("$web_search", session.getToolDefinition("$web_search"), "echo", record, { query: "x" });
+		const echoOut = transcript(host, [evalCard(evalDef, "w a"), echo, evalCard(evalDef, "w b"), evalCard(evalDef, "w c")]).project();
+		expect(echoOut.length).toBe(3);
+		expect(echoOut[1]).toBe(echo);
+		expect(record).toEqual(before);
+	});
+
+	test("shell and MCP summary text cannot inject terminal controls", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		installMocks(host, ["bash", "mcp_grep_app_searchGitHub"]);
+		const bash = session.getToolDefinition("bash");
+		const search = session.getToolDefinition("mcp_grep_app_searchGitHub");
+		const command = "\u001b[31mrm -rf\u001b[0m\u001b]0;pwned\u0007\nsecond line";
+		const preview = "\u001b]0;pwned\u0007hello\nworld\u001b[2J";
+		const cards = [
+			toolCard("bash", bash, "bash", { details: {}, content: [{ type: "text", text: "done" }] }, { command }),
+			toolCard("mcp_grep_app_searchGitHub", search, "search", { details: { server: "srv", tool: "github", preview }, content: [{ type: "text", text: "x" }] }, { query: "useState" }),
+		];
+		const rendered = (transcript(host, cards).project()[0] as Grouped).render(240);
+		expect(rendered).toContain("  └ bash rm -rf");
+		expect(rendered).toContain("    mcp_grep_app_searchGitHub useState · hello world");
+		for (const line of rendered) expect(line).not.toMatch(/\p{Cc}/u);
+	});
+
+	test("the 79-name catalog matrix accounts for every observed tool", async () => {
+		expect(CATALOG).toHaveLength(79);
+		expect(new Set(CATALOG.map((row) => row.name)).size).toBe(79);
+		expect(CATALOG.filter((row) => row.expected === "eligible")).toHaveLength(61);
+		expect(CATALOG.filter((row) => row.expected === "native")).toHaveLength(18);
+
+		const host = makeHost();
+		const { session } = await load(host);
+		for (const row of CATALOG) host.defs[row.name] = catalogDef(row.shape);
+		const evalDef = session.getToolDefinition("eval");
+		const matrix: { name: string; expected: string; actual: string }[] = [];
+		for (const row of CATALOG) {
+			const definition = session.getToolDefinition(row.name);
+			const card = toolCard(row.name, definition, row.name, undefined, row.args ?? {}, "classic", row.cwd);
+			const out = transcript(host, [evalCard(evalDef, "lead"), card]).project();
+			const actual = out.length === 1 ? "eligible" : "native";
+			matrix.push({ name: row.name, expected: row.expected, actual });
+			expect(actual, row.name).toBe(row.expected);
+			if (actual === "eligible" && row.line !== undefined) {
+				expect((out[0] as Grouped).render(240)[3], row.name).toBe(`    ${row.line}`);
+			}
+		}
+		expect(matrix.every((row) => row.expected === row.actual)).toBe(true);
+
+		const unknownName = "novel_future_tool";
+		host.defs[unknownName] = catalogDef("two");
+		const unknown = toolCard(unknownName, session.getToolDefinition(unknownName), "unknown", undefined, {});
+		const unknownOut = transcript(host, [evalCard(evalDef, "u a"), unknown]).project();
+		expect(unknownOut.length).toBe(2);
+		expect(unknownOut[1]).toBe(unknown);
+	});
+});

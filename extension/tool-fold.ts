@@ -51,6 +51,23 @@ const COMPACT_TOOLS = new Set([
 	"lsp_symbols",
 	"lsp_prepare_rename",
 	"lsp_rename",
+	"bash",
+	"glob",
+	"mcp__ast_grep_rewrite",
+	"mcp__ast_grep_scan",
+	"mcp__ast_grep_search",
+	"mcp_context7_query-docs",
+	"mcp_context7_resolve-library-id",
+	"mcp_grep_app_searchGitHub",
+]);
+/** Exact MCP names: only two-slot full definitions are wrapped; inactive stubs stay native. */
+const MCP_TOOLS = new Set([
+	"mcp__ast_grep_rewrite",
+	"mcp__ast_grep_scan",
+	"mcp__ast_grep_search",
+	"mcp_context7_query-docs",
+	"mcp_context7_resolve-library-id",
+	"mcp_grep_app_searchGitHub",
 ]);
 /** Ordinary thread receipts: summarized inside a run, never given renderer slots. */
 const THREAD_TOOLS = new Set([
@@ -894,6 +911,133 @@ function compactLine(name: string, args: unknown, theme: Theme, cwd: unknown, pa
 	return partial ? `${head}${paint(theme, "muted", " …")}` : head;
 }
 
+/** Shell rows name the description or the first command line, never an inferred exit. */
+function shellText(name: string, args: unknown, theme: Theme, details?: Record<string, unknown>): string | undefined {
+	const request = isRecord(args) ? args : {};
+	const what = nonEmptyString(request.description) ?? firstLine(request.command);
+	if (!what) return undefined;
+	const head = `${title(theme, name)} ${what}`;
+	const handle = details?.background === true ? nonEmptyString(details.bash_id) : undefined;
+	return handle ? `${head} ${paint(theme, "muted", "background")} ${handle}` : head;
+}
+
+function shellPlan(name: string): ToolPlan {
+	return {
+		renderCall([args, theme, context]) {
+			const ctx = context as RenderContext | undefined;
+			if (ctx?.expanded || ctx?.isError) return undefined;
+			if (ctx?.hasResult) return { empty: true };
+			const line = shellText(name, args, theme as Theme);
+			return line ? { line } : undefined;
+		},
+		renderResult([result, options, theme, context]) {
+			const res = result as ToolResult;
+			const ctx = context as RenderContext | undefined;
+			if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+			const line = shellText(name, ctx?.args, theme as Theme, res?.details);
+			return line ? { line } : undefined;
+		},
+	};
+}
+
+/** Glob shares find's two native slots; its row keeps the audited pattern and search path. */
+function globText(args: unknown, theme: Theme, cwd: unknown): string | undefined {
+	const request = isRecord(args) ? args : {};
+	const pattern = nonEmptyString(request.pattern);
+	if (!pattern) return undefined;
+	const path = nonEmptyString(request.path) ?? ".";
+	return `${title(theme, "glob")} ${pattern} ${paint(theme, "muted", "in")} ${shortPath(path, cwd)}`;
+}
+
+const globPlan: ToolPlan = {
+	renderCall([args, theme, context]) {
+		const ctx = context as RenderContext | undefined;
+		if (ctx?.expanded || ctx?.isError) return undefined;
+		if (ctx?.hasResult) return { empty: true };
+		const line = globText(args, theme as Theme, ctx?.cwd);
+		return line ? { line } : undefined;
+	},
+	renderResult([result, options, theme, context]) {
+		const res = result as ToolResult;
+		const ctx = context as RenderContext | undefined;
+		if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+		const line = globText(ctx?.args, theme as Theme, ctx?.cwd);
+		return line ? { line } : undefined;
+	},
+};
+
+function firstPathEntry(value: unknown): string | undefined {
+	return Array.isArray(value) ? nonEmptyString(value[0]) : undefined;
+}
+
+/** The meaningful arguments of a full MCP tool, plus ast-grep's apply/preview state. */
+function mcpTarget(name: string, args: unknown): { target: string; state?: string } | undefined {
+	const request = isRecord(args) ? args : {};
+	const apply = request.apply === true ? "apply" : "preview";
+	switch (name) {
+		case "mcp__ast_grep_rewrite":
+		case "mcp__ast_grep_search": {
+			const pattern = nonEmptyString(request.pattern);
+			if (!pattern) return undefined;
+			const path = firstPathEntry(request.paths);
+			return { target: `${pattern}${path ? ` ${path}` : ""}`, state: apply };
+		}
+		case "mcp__ast_grep_scan": {
+			const rule = nonEmptyString(request.ruleFile) ?? firstPathEntry(request.paths);
+			return rule ? { target: rule, state: apply } : undefined;
+		}
+		case "mcp_context7_query-docs": {
+			const library = nonEmptyString(request.libraryId);
+			const query = nonEmptyString(request.query);
+			return library && query ? { target: `${library} ${query}` } : undefined;
+		}
+		case "mcp_context7_resolve-library-id": {
+			const library = nonEmptyString(request.libraryName);
+			const query = nonEmptyString(request.query);
+			return library && query ? { target: `${library} ${query}` } : undefined;
+		}
+		case "mcp_grep_app_searchGitHub": {
+			const query = nonEmptyString(request.query);
+			if (!query) return undefined;
+			const where = nonEmptyString(request.repo) ?? nonEmptyString(request.path);
+			return { target: `${query}${where ? ` ${where}` : ""}` };
+		}
+		default:
+			return undefined;
+	}
+}
+
+function mcpText(name: string, args: unknown, theme: Theme, preview?: string): string | undefined {
+	const target = mcpTarget(name, args);
+	if (!target) return undefined;
+	const state = target.state ? ` ${paint(theme, "muted", target.state)}` : "";
+	const head = `${title(theme, name)} ${target.target}${state}`;
+	return preview === undefined ? head : `${head} ${paint(theme, "muted", "·")} ${plainText(preview)}`;
+}
+
+function mcpPlan(name: string): ToolPlan {
+	return {
+		renderCall([args, theme, context]) {
+			const ctx = context as RenderContext | undefined;
+			if (ctx?.expanded || ctx?.isError) return undefined;
+			if (ctx?.hasResult) return { empty: true };
+			const line = mcpText(name, args, theme as Theme);
+			return line ? { line } : undefined;
+		},
+		renderResult([result, options, theme, context]) {
+			const res = result as ToolResult;
+			const ctx = context as RenderContext | undefined;
+			if (isExpanded(options as RenderOptions, ctx) || res?.isError || ctx?.isError || !textOnlyContent(result)) return undefined;
+			const details = res?.details;
+			// A refusal carries both details.error and a preview; reject it before reading the preview.
+			if (!isRecord(details) || details.error !== undefined || details.isError === true) return undefined;
+			if (!nonEmptyString(details.server) || !nonEmptyString(details.tool) || typeof details.preview !== "string") return undefined;
+			const line = mcpText(name, ctx?.args, theme as Theme, details.preview);
+			return line ? { line } : undefined;
+		},
+	};
+}
+
 function compactPlan(name: string): ToolPlan {
 	return {
 		renderCall([args, theme, context]) {
@@ -916,6 +1060,9 @@ const PLANS: Record<string, ToolPlan> = { eval: evalPlan, edit: editPlan, apply_
 
 function planFor(name: string): ToolPlan | undefined {
 	if (Object.hasOwn(PLANS, name)) return PLANS[name];
+	if (name === "bash" || name === "powershell") return shellPlan(name);
+	if (name === "glob") return globPlan;
+	if (MCP_TOOLS.has(name)) return mcpPlan(name);
 	return COMPACT_TOOLS.has(name) ? compactPlan(name) : undefined;
 }
 
