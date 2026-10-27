@@ -244,11 +244,26 @@ function hasGroup(h: Harness): boolean {
 	return groupIn(h) !== undefined;
 }
 
-/** Every case keeps its source cards/results by identity and executes no fixture. */
-function expectNoSideEffects(h: Harness, source: readonly Mod[], results: readonly unknown[]): void {
+type ResultSnapshot = { card: Mod; result: unknown; clone: unknown };
+
+/** Clone each card's current result so a later render can prove projection never touched it. */
+function snapshotResults(cards: readonly Mod[]): ResultSnapshot[] {
+	return cards.map((card) => ({ card, result: card.result, clone: structuredClone(card.result) }));
+}
+
+/** Source children keep their identity/order and every fixture result keeps its identity and deep value. */
+function expectSourceUnchanged(h: Harness, source: readonly Mod[], snapshots: readonly ResultSnapshot[]): void {
 	expect(h.im.chatContainer.children).toEqual(source);
 	expect(h.im.chatContainer.children.every((child: Mod, index: number) => child === source[index])).toBe(true);
-	expect(results.every((result) => result !== undefined)).toBe(true);
+	for (const { card, result, clone } of snapshots) {
+		expect(card.result).toBe(result);
+		expect(card.result).toEqual(clone);
+	}
+}
+
+/** Every case keeps its source cards/results by identity and executes no fixture. */
+function expectNoSideEffects(h: Harness, source: readonly Mod[], snapshots: readonly ResultSnapshot[]): void {
+	expectSourceUnchanged(h, source, snapshots);
 	expect(executeCalls).toBe(0);
 }
 
@@ -297,8 +312,8 @@ test("G1 todo mixed run folds todo titles with eval in order", async () => {
 	const evalCardG1 = toolCard(h, "eval", { language: "js", summary: "검증" }, evalResult("검증"));
 	const done = toolCard(h, "todo", { op: "done", task: "계획" }, textResult("", { op: "done" }));
 	const source = [start, evalCardG1, done];
-	const results = source.map((card) => card.result);
 	add(h, ...source);
+	const snapshots = snapshotResults(source);
 	const out = render(h);
 	evidence("g1-todo-mixed", out);
 	show("G1", out.plain);
@@ -308,7 +323,7 @@ test("G1 todo mixed run folds todo titles with eval in order", async () => {
 	expect(count(out.plain, "Ran 3 tools · todo 2 · eval 1")).toBe(1);
 	expect(out.plain.some((line) => line.includes("eval js ✓ 검증"))).toBe(true);
 	expect(inOrder(out.plain, "todo start: 계획", "eval js ✓ 검증", "todo done: 계획")).toBe(true);
-	expectNoSideEffects(h, source, results);
+	expectNoSideEffects(h, source, snapshots);
 });
 
 test("G2 default control native fallback frames call partial settled failure", async () => {
@@ -320,7 +335,9 @@ test("G2 default control native fallback frames call partial settled failure", a
 	const source = [running, control];
 	add(h, ...source);
 	const screen = mainScreen(h);
+	const callSnapshot = snapshotResults(source);
 	const call = screen.render();
+	expectSourceUnchanged(h, source, callSnapshot);
 	evidence("g2-call", call);
 	show("G2 call", call.plain);
 	expect(count(call.plain, "Running 2 tools · eval 1 · kill_bash 1")).toBe(1);
@@ -328,7 +345,9 @@ test("G2 default control native fallback frames call partial settled failure", a
 
 	const partial = evalResult("A 조사");
 	running.updateResult(partial, true);
+	const partialSnapshot = snapshotResults(source);
 	const partialFrame = screen.render();
+	expectSourceUnchanged(h, source, partialSnapshot);
 	evidence("g2-partial", partialFrame);
 	show("G2 partial", partialFrame.plain);
 	expect(count(partialFrame.plain, "Running 2 tools")).toBe(1);
@@ -339,7 +358,9 @@ test("G2 default control native fallback frames call partial settled failure", a
 	const settledControl = textResult("killed 1 session", {});
 	running.updateResult(settledEval, false);
 	control.updateResult(settledControl, false);
+	const settledSnapshot = snapshotResults(source);
 	const settled = screen.render();
+	expectSourceUnchanged(h, source, settledSnapshot);
 	evidence("g2-settled", settled);
 	show("G2 settled", settled.plain);
 	expect(count(settled.plain, "Ran 2 tools · eval 1 · kill_bash 1")).toBe(1);
@@ -347,14 +368,14 @@ test("G2 default control native fallback frames call partial settled failure", a
 
 	const failed = textResult("QA-KILL-ERROR", {}, true);
 	control.updateResult(failed, false);
+	const failedSnapshot = snapshotResults(source);
 	const failure = screen.render();
 	evidence("g2-failure", failure);
 	show("G2 failure", failure.plain);
 	expect(count(failure.plain, "Ran 2 tools")).toBe(0);
 	expect(failure.plain.some((line) => line.includes("kill_bash"))).toBe(true);
 	expect(failure.plain.some((line) => line.includes("QA-KILL-ERROR"))).toBe(true);
-	expect(control.result).toBe(failed);
-	expect(executeCalls).toBe(0);
+	expectNoSideEffects(h, source, failedSnapshot);
 });
 
 test("G3 thread lifecycle and background queued receipts stay distinct", async () => {
@@ -369,7 +390,9 @@ test("G3 thread lifecycle and background queued receipts stay distinct", async (
 	const source = [send, handoff, background];
 	add(h, ...source);
 	const screen = mainScreen(h);
+	const callSnapshot = snapshotResults(source);
 	const call = screen.render();
+	expectSourceUnchanged(h, source, callSnapshot);
 	evidence("g3-call", call);
 	expect(count(call.plain, "Running 3 tools · thread_send 1 · thread_handoff 1 · bash 1")).toBe(1);
 
@@ -377,14 +400,18 @@ test("G3 thread lifecycle and background queued receipts stay distinct", async (
 	const started = okThread({ delivery: { kind: "started" }, thread_id: "t2" });
 	const launched = textResult("started job", { background: true, bash_id: "bg-42" });
 	background.updateResult(launched, true);
+	const partialSnapshot = snapshotResults(source);
 	const partial = screen.render();
+	expectSourceUnchanged(h, source, partialSnapshot);
 	evidence("g3-partial", partial);
 	expect(count(partial.plain, "Running 3 tools")).toBe(1);
 	expect(partial.plain.some((line) => line.includes("background bg-42"))).toBe(true);
 	send.updateResult(queued, false);
 	handoff.updateResult(started, false);
 	background.updateResult(launched, false);
+	const settledSnapshot = snapshotResults(source);
 	const settled = screen.render();
+	expectSourceUnchanged(h, source, settledSnapshot);
 	evidence("g3-settled", settled);
 	show("G3 settled", settled.plain);
 	// A queued/started delivery is a receipt, not completion, so the header stays Running.
@@ -398,14 +425,13 @@ test("G3 thread lifecycle and background queued receipts stay distinct", async (
 
 	const failedThread = { content: [], details: { result: { kind: "error", error: { code: "invalid_arguments" } } } };
 	send.updateResult(failedThread, false);
+	const failedSnapshot = snapshotResults(source);
 	const failure = screen.render();
 	evidence("g3-failure", failure);
 	show("G3 failure", failure.plain);
 	expect(count(failure.plain, "Running 3 tools")).toBe(0);
 	expect(failure.plain.some((line) => line.includes("thread_send"))).toBe(true);
-	expect(h.im.chatContainer.children).toEqual(source);
-	expect(send.result).toBe(failedThread);
-	expect(executeCalls).toBe(0);
+	expectNoSideEffects(h, source, failedSnapshot);
 });
 
 test("G4 full MCP and shell glob rows retain previews and targets", async () => {
@@ -425,6 +451,7 @@ test("G4 full MCP and shell glob rows retain previews and targets", async () => 
 	const glob = toolCard(h, "glob", { pattern: "**/*.ts", path: "C:/repo/src" }, globResult);
 	const source = [search, rewrite, shell, glob];
 	add(h, ...source);
+	const snapshots = snapshotResults(source);
 	const out = render(h);
 	evidence("g4-mcp-shell-glob", out);
 	show("G4", out.plain);
@@ -435,8 +462,7 @@ test("G4 full MCP and shell glob rows retain previews and targets", async () => 
 	expect(out.plain.some((line) => line.includes("glob **/*.ts in src"))).toBe(true);
 	expect(out.plain.some((line) => line.includes("mcp__ast_grep_search") && line.includes("preview"))).toBe(true);
 	expect(out.plain.some((line) => line.includes("mcp__ast_grep_rewrite") && line.includes("apply"))).toBe(true);
-	expect(source.every((card, index) => card.result === [searchResult, rewriteResult, shellResult, globResult][index])).toBe(true);
-	expect(executeCalls).toBe(0);
+	expectNoSideEffects(h, source, snapshots);
 });
 
 test("G5 widths 24 80 150 truncate Korean and sanitize controls", async () => {
@@ -449,6 +475,7 @@ test("G5 widths 24 80 150 truncate Korean and sanitize controls", async () => {
 	const glob = toolCard(h, "glob", { pattern: "**/*한국*.ts", path: "C:/repo/한국" }, textResult("ok", {}));
 	const source = [bash, glob];
 	add(h, ...source);
+	const snapshots = snapshotResults(source);
 	for (const width of [24, 80, 150]) {
 		const out = render(h, width);
 		evidence(`g5-width-${width}`, out);
@@ -459,10 +486,7 @@ test("G5 widths 24 80 150 truncate Korean and sanitize controls", async () => {
 		expect(out.plain.filter((line) => line.includes("한국어")).length).toBeGreaterThan(0);
 		expect(count(out.plain, "Ran 2 tools")).toBe(1);
 	}
-	expect(h.im.chatContainer.children).toEqual(source);
-	expect(bash.result).toBe(source[0].result);
-	expect(glob.result).toBe(source[1].result);
-	expect(executeCalls).toBe(0);
+	expectNoSideEffects(h, source, snapshots);
 });
 
 test("G6 header click expands member bodies and recollapses exactly", async () => {
@@ -473,6 +497,7 @@ test("G6 header click expands member bodies and recollapses exactly", async () =
 	const bash = toolCard(h, "bash", { description: "보기", command: "ls" }, textResult("ok", {}));
 	const source = [evalCardG6, bash];
 	add(h, ...source);
+	const snapshots = snapshotResults(source);
 	const screen = mainScreen(h);
 	const collapsed = screen.render();
 	evidence("g6-collapsed", collapsed);
@@ -496,9 +521,7 @@ test("G6 header click expands member bodies and recollapses exactly", async () =
 	const recollapsed = screen.render();
 	evidence("g6-recollapsed", recollapsed);
 	expect(recollapsed.plain).toEqual(collapsed.plain);
-	expect(h.im.chatContainer.children).toEqual(source);
-	expect(source.every((card) => card.result !== undefined)).toBe(true);
-	expect(executeCalls).toBe(0);
+	expectNoSideEffects(h, source, snapshots);
 });
 
 test("G7 errors media questions stubs takeover and Grok stay native", async () => {
@@ -512,11 +535,12 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	const mcpError = toolCard(errorHarness, "mcp__ast_grep_scan", { ruleFile: "rule.yml", paths: ["src"] }, refused);
 	const errorSource = [errorEval, mcpError];
 	add(errorHarness, ...errorSource);
+	const errorSnapshot = snapshotResults(errorSource);
 	const errorOut = render(errorHarness);
 	evidence("g7-error", errorOut);
 	expect(hasGroup(errorHarness)).toBe(false);
 	expect(errorOut.plain.some((line) => line.includes("QA-MCP-REFUSAL"))).toBe(true);
-	expect(errorHarness.im.chatContainer.children).toEqual(errorSource);
+	expectSourceUnchanged(errorHarness, errorSource, errorSnapshot);
 	const mediaHarness = await harness("g7-media");
 	const mediaEval = evalCard(mediaHarness, "정상2");
 	const media = toolCard(mediaHarness, "eval", { language: "js", summary: "그림" }, {
@@ -525,10 +549,12 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	});
 	const mediaSource = [mediaEval, media];
 	add(mediaHarness, ...mediaSource);
+	const mediaSnapshot = snapshotResults(mediaSource);
 	const mediaImage = media.presentationSnapshot.state.result.content[0];
 	const mediaOut = render(mediaHarness);
 	evidence("g7-media", mediaOut);
 	expect(hasGroup(mediaHarness)).toBe(false);
+	expectSourceUnchanged(mediaHarness, mediaSource, mediaSnapshot);
 	expect(media.presentationSnapshot.state.result.content[0]).toBe(mediaImage);
 
 	const malformedHarness = await harness("g7-malformed");
@@ -538,12 +564,12 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	const malformed = toolCard(malformedHarness, "webfetch", { url: "https://example.invalid" }, malformedResult);
 	const malformedSource = [malformedEval, malformed];
 	add(malformedHarness, ...malformedSource);
+	const malformedSnapshot = snapshotResults(malformedSource);
 	const malformedOut = render(malformedHarness);
 	evidence("g7-malformed", malformedOut);
 	expect(hasGroup(malformedHarness)).toBe(false);
 	expect(malformedOut.plain.some((line) => line.includes("webfetch"))).toBe(true);
-	expect(malformedHarness.im.chatContainer.children).toEqual(malformedSource);
-	expect(malformed.result).toBe(malformedResult);
+	expectSourceUnchanged(malformedHarness, malformedSource, malformedSnapshot);
 
 	const questionHarness = await harness("g7-question");
 	fixture("ask_user_question", { renderCall: () => new tui.Text("QUESTION-CALL", 0, 0) });
@@ -552,11 +578,12 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	const q2 = evalCard(questionHarness, "뒤");
 	const questionSource = [q1, question, q2];
 	add(questionHarness, ...questionSource);
+	const questionSnapshot = snapshotResults(questionSource);
 	const questionOut = render(questionHarness);
 	evidence("g7-question", questionOut);
 	expect(hasGroup(questionHarness)).toBe(false);
 	expect(questionOut.plain.some((line) => line.includes("QUESTION-CALL") || line.includes("ask_user_question"))).toBe(true);
-	expect(questionHarness.im.chatContainer.children).toEqual(questionSource);
+	expectSourceUnchanged(questionHarness, questionSource, questionSnapshot);
 
 	const stubHarness = await harness("g7-stub");
 	fixture("mcp__ast_grep_scan", { renderCall: () => new tui.Text("MCP-STUB-CALL", 0, 0) });
@@ -565,11 +592,12 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	const s2 = evalCard(stubHarness, "후");
 	const stubSource = [s1, stub, s2];
 	add(stubHarness, ...stubSource);
+	const stubSnapshot = snapshotResults(stubSource);
 	const stubOut = render(stubHarness);
 	evidence("g7-stub", stubOut);
 	expect(hasGroup(stubHarness)).toBe(false);
 	expect(stubOut.plain.some((line) => line.includes("inactive guidance"))).toBe(true);
-	expect(stubHarness.im.chatContainer.children).toEqual(stubSource);
+	expectSourceUnchanged(stubHarness, stubSource, stubSnapshot);
 
 	const takeoverHarness = await harness("g7-takeover");
 	fixture("thread_create", { renderResult: () => new tui.Text("TAKEOVER-RESULT", 0, 0) });
@@ -578,11 +606,12 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	const t2 = evalCard(takeoverHarness, "둘");
 	const takeoverSource = [t1, takeover, t2];
 	add(takeoverHarness, ...takeoverSource);
+	const takeoverSnapshot = snapshotResults(takeoverSource);
 	const takeoverOut = render(takeoverHarness);
 	evidence("g7-takeover", takeoverOut);
 	expect(hasGroup(takeoverHarness)).toBe(false);
 	expect(takeoverOut.plain.some((line) => line.includes("TAKEOVER-RESULT"))).toBe(true);
-	expect(takeoverHarness.im.chatContainer.children).toEqual(takeoverSource);
+	expectSourceUnchanged(takeoverHarness, takeoverSource, takeoverSnapshot);
 
 	const grokHarness = await harness("g7-grok");
 	grokHarness.im.chrome = { toolPresentation: "grok" };
@@ -592,6 +621,7 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	const grokThread = toolCard(grokHarness, "thread_send", { thread: "t1" }, okThread({ delivery: { kind: "started" }, thread_id: "t1" }));
 	const grokSource = [grokBash, grokThread];
 	add(grokHarness, ...grokSource);
+	const grokSnapshot = snapshotResults(grokSource);
 	const grokOut = render(grokHarness);
 	evidence("g7-grok", grokOut);
 	expect(hasGroup(grokHarness)).toBe(false);
@@ -599,8 +629,8 @@ test("G7 errors media questions stubs takeover and Grok stay native", async () =
 	expect(grokThread.presentationSnapshot.presentation).toBe("grok");
 	expect(grokOut.plain.some((line) => line.includes("bash"))).toBe(true);
 	expect(grokOut.plain.some((line) => line.includes("thread_send"))).toBe(true);
-	expect(grokHarness.im.chatContainer.children).toEqual(grokSource);
-	expect(mediaHarness.im.chatContainer.children).toEqual(mediaSource);
+	expectSourceUnchanged(grokHarness, grokSource, grokSnapshot);
+	expectSourceUnchanged(mediaHarness, mediaSource, mediaSnapshot);
 	expect(executeCalls).toBe(0);
 });
 
@@ -640,18 +670,18 @@ test("G8 native fallback lines and reload keep absent slots and raw bytes", asyn
 	const listA = toolCard(h, "thread_list", {}, okThread({ threads: [] }));
 	const listB = toolCard(h, "thread_list", {}, okThread({ threads: [] }));
 	add(h, listA, listB);
+	const snapshots = snapshotResults([listA, listB]);
 	const grouped = render(h);
 	evidence("g8-grouped-before-reload", grouped);
 	expect(count(grouped.plain, "Ran 2 tools · thread_list 2")).toBe(1);
-	expect(h.im.chatContainer.children).toEqual([listA, listB]);
-	expect(listA.result).toBeDefined();
-	expect(listB.result).toBeDefined();
+	expectSourceUnchanged(h, [listA, listB], snapshots);
 	h.fire("session_shutdown", { reason: "reload" });
 	h.im.chatContainer.invalidate();
 	const reloaded = render(h);
 	evidence("g8-reloaded", reloaded);
 	expect(hasGroup(h)).toBe(false);
 	expect(reloaded.plain.some((line) => line.includes("thread_list"))).toBe(true);
+	expectNoSideEffects(h, [listA, listB], snapshots);
 
 	const proto = senpi.InteractiveMode.prototype;
 	const savedExpansion = proto.setToolsExpanded;
