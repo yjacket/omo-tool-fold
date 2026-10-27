@@ -241,7 +241,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
 ## Todos
 > Implementation + Test = ONE todo. Never separate.
 <!-- APPEND TASK BATCHES BELOW THIS LINE WITH edit/apply_patch - never rewrite the headers above. -->
-- [ ] 1. Preserve state, media and card-context boundaries
+- [x] 1. Preserve state, media and card-context boundaries
   - Recommended task executor category: quick - one existing eligibility/render path and its neighboring tests.
   - Scope: `extension/tool-fold.ts`, `test/tool-fold.test.ts`. Read first; no other production files.
   - What to do: pass snapshot.identity.cwd into non-eval line construction; make eval run/control argument handling consistent in result and member paths; reject grouping on non-text/malformed content; preserve top-level/context and documented semantic error results. Keep media source-card rendering/title intact rather than adding a result-slot fallback that loses its call.
@@ -254,7 +254,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/task-1.md`, named test output and before/after source identity assertions.
   - Commit: Y, after green checks - `tool-fold: preserve state and card context in grouping`.
 
-- [ ] 2. Join every valid todo operation without replacing its renderer
+- [x] 2. Join every valid todo operation without replacing its renderer
   - Recommended task executor category: quick - one native-title formatter and one membership branch.
   - Scope: `extension/tool-fold.ts`, `test/tool-fold.test.ts`.
   - What to do: add a pure todo member-line formatter that mirrors the installed native title forms specified above. Keep todoPlan's standalone renderer behavior and empty result unchanged. Use args.op before a result; after a result, details.op is authoritative and init totals come from details.phases. Missing op before result is bare todo; unknown explicit op is native. Preserve pending state and original expanded checklist.
@@ -266,7 +266,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/task-2.md`.
   - Commit: Y - `tool-fold: include todo titles in consecutive tool groups`.
 
-- [ ] 3. Admit audited terminal, schedule and workflow controls by projection
+- [x] 3. Admit audited terminal, schedule and workflow controls by projection
   - Recommended task executor category: quick - six explicit names, known result predicates and no renderer mutation.
   - Scope: `extension/tool-fold.ts`, `test/tool-fold.test.ts`.
   - What to do: add a finite projection-only set and admission branch for kill_bash/monitor/schedule_wakeup/schedule_prompt/workflow/workpool. Definitions with no slots qualify; monitor alone accepts the audited call-only shape. Keep default and call-only renderer identities exactly unchanged. Produce the exact target/lifecycle summaries above using safe text. Apply human_input, workflow warnings/errors/node states and workpool error/receipt guards. Keep unknown required shapes native.
@@ -278,7 +278,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/task-3.md`.
   - Commit: Y - `tool-fold: group audited controls without replacing native renderers`.
 
-- [ ] 4. Admit ordinary thread receipts while preserving human decisions
+- [x] 4. Admit ordinary thread receipts while preserving human decisions
   - Recommended task executor category: quick - sixteen explicit names sharing one documented result union.
   - Scope: `extension/tool-fold.ts`, `test/tool-fold.test.ts`.
   - What to do: extend the projection-only set with the sixteen eligible thread names above. Require no renderer slots and details.result.kind ok after result; retain kind error/unknown/missing, source_incomplete and error_note. Format each target from the exact field table. Preserve queued_offline versus started/steered deliveries. Exclude thread_answer and question/missing/unknown thread_report kinds from the pending call onward.
@@ -290,7 +290,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/task-4.md`.
   - Commit: Y - `tool-fold: group ordinary thread receipts and retain decision cards`.
 
-- [ ] 5. Add audited native and full-MCP folds and complete the tool matrix
+- [x] 5. Add audited native and full-MCP folds and complete the tool matrix
   - Recommended task executor category: quick - explicit allowlist additions and table-driven tests using existing wrappers.
   - Scope: `extension/tool-fold.ts`, `test/tool-fold.test.ts`.
   - What to do: add bash/glob and the six exact MCP names to the renderer-backed path; keep the two-slot requirement. Add only the summary selectors needed by the field table. Preserve bash/powershell background IDs, MCP details.error refusals and remote errors. Use one independent fixture table covering all 61 eligible names and all 18 preserved names; do not derive the expected set from the production allowlist.
@@ -302,7 +302,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/task-5.md`, machine-readable 79-name coverage results.
   - Commit: Y - `tool-fold: fold audited shell glob and full MCP tools`.
 
-- [ ] 6. Prove the policy with real Senpi rendering components
+- [x] 6. Prove the policy with real Senpi rendering components
   - Recommended task executor category: quick - focused additions to the existing real-component harness.
   - Scope: `qa/real-render.qa.ts`; do not edit production code or unit-test files.
   - What to do: extend the installed-class harness with synthetic tool definitions/results for renderer-backed and projection-only families. Use the exact no-slot/call-only/two-slot shapes, real native fallback, actual truncateToWidth/visible-width behavior, and throw if any fixture execute is called. Add G1-G8 cases; preserve R1-R12 and both history tests.
@@ -314,7 +314,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/components/` ANSI/text and `.omo/evidence/comprehensive-grouping/task-6.md`.
   - Commit: Y - `tool-fold: verify comprehensive groups with real Senpi components`.
 
-- [ ] 7. Extend the isolated replay with deterministic grouping scenarios
+- [x] 7. Extend the isolated replay with deterministic grouping scenarios
   - Recommended task executor category: quick - one existing QA harness, controlled test-only inputs and fixture operations.
   - Scope: `qa/history-window-replay.mjs`; do not edit `qa/live-replay.mjs` or historical captures.
   - What to do: retain default history behavior and add the documented QA_SCENARIO/QA_COLS/QA_ROWS/QA_THEME controls. Add deterministic settled fixture scenes for todo/mixed tools, native defaults, MCP full/stub, semantic failures, decisions/media, background/queued receipts and native exploration. Follow the definition-source table and collision checks. Add frame-subscribed SGR mouse actions, per-scene captures and assertions, version/provenance and cleanup receipts. Run the nonempty-evidence guard before existing mkdir/write calls; an existing empty directory is allowed. Preserve raw ANSI and xterm screenshots. Fixtures execute nothing.
@@ -326,7 +326,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/harness-native/` and `task-7.md`.
   - Commit: Y - `tool-fold: add deterministic mixed-tool replay coverage`.
 
-- [ ] 8. Document the finite policy and native-preserving behavior
+- [x] 8. Document the finite policy and native-preserving behavior
   - Recommended task executor category: quick - bounded documentation updates using the completed implementation contract.
   - Scope: `README.md`, `README.ko.md`, `CLAUDE.md`.
   - What to do: distinguish standalone folds from projection-only members, include todo and new families, document the 61/18 finite scope, native decisions/media/stubs, background receipt meaning, no line cap and unchanged Ctrl+O behavior. Update engineering invariants that currently require WRAPPED for every member. Describe isolated new QA commands and future catalog-diff audit. Keep historical tested-version paragraphs historical; new receipts carry actual versions, and do not relabel old runs.
@@ -338,7 +338,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/task-8.md` with a claim-to-source checklist.
   - Commit: Y - `tool-fold: document comprehensive and projection-only grouping`.
 
-- [ ] 9. Integrate once and run the complete code-level regression checks
+- [x] 9. Integrate once and run the complete code-level regression checks
   - Recommended task executor category: quick - deterministic integration gate, not new design.
   - Scope: read task 1-8 commits/receipts and final source; write only the integration evidence receipt unless an in-scope failure requires returning work to its owner.
   - What to do: verify disjoint changes were integrated in dependency order, inspect the full diff, run diagnostics, full unit suite and complete real-component suite. Verify no skip/only/xfail/sleep was introduced, no unexpected file was changed and the default history scenario still parses unchanged.
@@ -373,6 +373,14 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - QA scenarios: Q11+ Codex 80-light, 80-dark, 150-light, 150-dark preserve ordering, narrow CJK and re-collapse. Q11- all unsafe fixture cards stay native; original-history regression restores compact rows and final response; a scoped process query finds zero owned live processes and fs.stat on removed roots reports absence.
   - Evidence: the five named directories, all ANSI/text/PNG/actions/report/cleanup files and `task-11.md`.
   - Commit: N - evidence only; retain all receipts outside deleted scratch.
+
+- [x] 12. Settle a stopped wakeup receipt as finished (follow-up from review-qa-2.md)
+  - Recommended task executor category: quick - one status value and its test.
+  - Scope: `extension/tool-fold.ts`, `test/tool-fold.test.ts`.
+  - What to do: a settled schedule_wakeup with details.action "stopped" is a terminal acknowledgement; give its member line status "complete" (row text keeps "stopped") so a group of finished receipts reads "Ran", consistent with schedule_prompt cancel without in-flight. A scheduled wakeup stays non-complete.
+  - Closes: IS-2 regression found by review-qa-2.md (a stopped wakeup kept the group header Running indefinitely).
+  - Acceptance criteria: a test proves [eval, schedule_wakeup stopped] reads "Ran 2 tools" while [eval, schedule_wakeup scheduled] still reads "Running 2 tools"; reverting the status makes it fail; `bun test` exits 0; lsp_diagnostics clean.
+  - Commit: Y - `tool-fold: settle stopped wakeup receipts as finished`.
 
 ## Final verification wave
 > Runs after ALL todos. ALL must APPROVE. The user preapproved this planning scope and requested no repeated approval questions; report the verified outcome without a new confirmation gate. Any new destructive/external action remains outside scope.
