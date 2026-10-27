@@ -119,6 +119,8 @@ const PROJECTION_TOOLS = new Set([
 const WORKFLOW_ACTIONS = new Set(["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend"]);
 const WORKFLOW_KINDS = new Set(["started", "attached", "snapshot", "waited", "detached", "cancelled", "retried", "sent", "amended"]);
 const RUN_STATUSES = new Set(["pending", "running", "paused", "completed"]);
+/** Installed task statuses that are not failures: error, cancelled, interrupted and lost are not here. */
+const TASK_CLEAR_STATUSES = new Set(["pending", "running", "paused", "completed"]);
 const BAD_NODE_STATES = new Set(["failed", "cancelled", "skipped"]);
 const POOL_OPS = new Set(["create", "push", "close", "inspect", "cancel", "yield"]);
 const POOL_STATUSES = new Set(["open", "closing", "cancelled"]);
@@ -195,13 +197,22 @@ function title(theme: Theme, name: string): string {
 	return paint(theme, "toolTitle", strong);
 }
 
+const ESC = String.fromCharCode(0x1b);
+const BEL = String.fromCharCode(0x07);
+const C1_CSI = String.fromCharCode(0x9b);
+const OSC_SEQUENCE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\|$)`, "g");
+const CSI_SEQUENCE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, "g");
+const C1_CSI_SEQUENCE = new RegExp(`${C1_CSI}[0-?]*[ -/]*[@-~]`, "g");
+const ESC_SEQUENCE = new RegExp(`${ESC}[@-_]`, "g");
+const CONTROL_SEQUENCE = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]", "g");
+
 function terminalSafe(value: string): string {
 	return value
-		.replace(/\u001b\][\s\S]*?(?:\u0007|\u001b\\|$)/g, "")
-		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/\u001b[@-_]/g, "")
-		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+		.replace(OSC_SEQUENCE, "")
+		.replace(CSI_SEQUENCE, "")
+		.replace(C1_CSI_SEQUENCE, "")
+		.replace(ESC_SEQUENCE, "")
+		.replace(CONTROL_SEQUENCE, "");
 }
 
 function firstLine(value: unknown): string | undefined {
@@ -1050,7 +1061,7 @@ function compactPlan(name: string): ToolPlan {
 			const res = result as ToolResult;
 			const ctx = context as RenderContext | undefined;
 			const opts = options as RenderOptions;
-			if (isExpanded(opts, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+			if (isExpanded(opts, ctx) || resultFailed(res) || ctx?.isError) return undefined;
 			return { line: compactLine(name, ctx?.args, theme as Theme, ctx?.cwd, opts?.isPartial === true) };
 		},
 	};
@@ -1138,13 +1149,21 @@ function partialNotice(parts: string): string {
 	return `tool-fold 일부 꺼짐 (${parts}). 그 부분은 원래대로 보입니다.`;
 }
 
+/** A task snapshot status is a structured failure unless it is a known active/complete state. */
+function taskStatusUnsafe(result: unknown): boolean {
+	const details = (result as ToolResult | undefined)?.details;
+	if (!isRecord(details) || !isRecord(details.snapshot) || !Object.hasOwn(details.snapshot, "status")) return false;
+	const status = details.snapshot.status;
+	return typeof status !== "string" || !TASK_CLEAR_STATUSES.has(status);
+}
+
 /**
  * A card joins a block only when its collapsed render is this extension's one-liner: eval keeps
  * its own parts, every other folded tool (edit, apply_patch, write, ...) contributes its fold line.
  */
 function resultFailed(result: unknown): boolean {
 	const res = result as ToolResult;
-	return !!res && typeof res === "object" && (!!res.isError || res.details?.isError === true);
+	return !!res && typeof res === "object" && (!!res.isError || res.details?.isError === true || taskStatusUnsafe(res));
 }
 
 /** Missing content stays compatible; present content must be an array made only of text blocks. */

@@ -33,6 +33,16 @@ const defaultTui = {
 
 type Call = { slot: string; args: unknown[] };
 
+/** C0 controls, DEL and C1 controls must never reach a rendered group line. */
+function hasControlCharacters(text: string): boolean {
+	for (const character of text) {
+		const code = character.codePointAt(0) ?? 0;
+		if (code === 0x09 || code === 0x0a || code === 0x0d) continue;
+		if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
+	}
+	return false;
+}
+
 type HostOptions = { withMethod?: boolean; withAssistant?: boolean; withInteractive?: boolean; withProject?: boolean; withExpansion?: boolean };
 
 function makeHost(options: HostOptions = {}) {
@@ -727,6 +737,32 @@ describe("grouping eligibility", () => {
 		expect(write.renderResult({ details: {} }, {}, theme, { isError: true })).toEqual({ original: "write.result" });
 	});
 
+	test("task status failures and unknown states stay native while active and completed statuses group", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		host.defs.task_output = { renderCall: () => ({}), renderResult: () => ({}) };
+		const task = session.getToolDefinition("task_output");
+		const taskResult = (status: string) => ({
+			details: { snapshot: { status } },
+			content: [{ type: "text", text: "received" }],
+		});
+		for (const status of ["failed", "blocked", "cancelled", "lost", "error", "interrupted", "brand-new-status"]) {
+			const unsafe = toolCard("task_output", task, status, taskResult(status), { task_id: "t1" });
+			const out = transcript(host, [evalCard(def, `a-${status}`), unsafe, evalCard(def, `b-${status}`)]).project();
+			expect(out.length).toBe(3);
+			expect(out[1]).toBe(unsafe);
+		}
+		const grouped = transcript(host, [
+			evalCard(def, "a"),
+			toolCard("task_output", task, "running", taskResult("running"), { task_id: "t1" }),
+			toolCard("task_output", task, "completed", taskResult("completed"), { task_id: "t2" }),
+			evalCard(def, "b"),
+		]).project();
+		expect(grouped.length).toBe(1);
+		expect((grouped[0] as Grouped).render(80).join("\n")).toContain("task_output");
+	});
+
 	test("grok presentation and kill_bash cards never join a group", async () => {
 		const host = makeHost();
 		const { session } = await load(host);
@@ -738,9 +774,11 @@ describe("grouping eligibility", () => {
 		const grokOut = transcript(host, grok);
 		expect(grokOut.project()).toBe(grokOut.im.chatContainer.children);
 
+		host.defs.kill_bash = { execute: mock(() => undefined) };
+		const killDef = session.getToolDefinition("kill_bash");
 		const kill = [
-			toolCard("kill_bash", {}, "grok kill a", { details: {} }, { bash_id: "b1" }, "grok"),
-			toolCard("kill_bash", {}, "grok kill b", { details: {} }, { bash_id: "b2" }, "grok"),
+			toolCard("kill_bash", killDef, "grok kill a", { details: {} }, { bash_id: "b1" }, "grok"),
+			toolCard("kill_bash", killDef, "grok kill b", { details: {} }, { bash_id: "b2" }, "grok"),
 		];
 		const killOut = transcript(host, kill);
 		expect(killOut.project()).toBe(killOut.im.chatContainer.children);
@@ -770,7 +808,7 @@ describe("grouping eligibility", () => {
 		const rendered = (out[0] as Grouped).render(80).join("\n");
 		expect(rendered).toContain("write a.ts");
 		expect(rendered).toContain("write b.ts");
-		expect(rendered).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
+		expect(hasControlCharacters(rendered)).toBe(false);
 
 		const ws = session.getToolDefinition("web_search");
 		const query = "\u001b]0;pwned\u0007hello\u001b[2J";
@@ -780,7 +818,7 @@ describe("grouping eligibility", () => {
 		]).project();
 		const text = (wsOut[0] as Grouped).render(80)[2];
 		expect(text).toBe("  └ web_search hello");
-		expect(text).not.toMatch(/[\u001B\u0007]/);
+		expect(hasControlCharacters(text)).toBe(false);
 	});
 });
 
@@ -896,6 +934,7 @@ describe("todo grouping", () => {
 			},
 			{ label: "unknown-call", result: undefined, args: { op: "brand-new-op" } },
 			{ label: "unknown-result", result: todoResult("brand-new-op"), args: { op: "done", task: "Ship it" } },
+			{ label: "missing-result-op", result: { details: { phases } }, args: { op: "done", task: "Ship it" } },
 			{ label: "malformed-target", result: todoResult("done"), args: { op: "done", task: 42 } },
 			{ label: "malformed-phases", result: todoResult("init", "nope"), args: { op: "init", list: phases } },
 		];
@@ -1151,8 +1190,8 @@ describe("default control grouping", () => {
 			{ label: "missing", tool: "kill_bash", definition: undefined, args: { bash_id: "b1" }, result: textResult("Killed b1.") },
 			{ label: "human", tool: "monitor", definition: monitor, args: { human_input: true, description: "chat" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
 			{ label: "human-pending", tool: "monitor", definition: monitor, args: { human_input: true, description: "chat" }, result: undefined },
-			{ label: "rearm", tool: "monitor", definition: monitor, args: { action: "rearm", bash_id: "mon_1" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
-			{ label: "unknown-action", tool: "monitor", definition: monitor, args: { action: "brand-new" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
+			{ label: "rearm", tool: "monitor", definition: monitor, args: { action: "rearm", bash_id: "mon_1", description: "watch" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
+			{ label: "unknown-action", tool: "monitor", definition: monitor, args: { action: "brand-new", description: "watch" }, result: detailsResult({ monitor: true, monitor_id: "mon_1" }) },
 			{ label: "monitor-shape", tool: "monitor", definition: monitor, args: { description: "chat" }, result: detailsResult({ monitor: true }) },
 			{ label: "wake-unknown", tool: "schedule_wakeup", definition: wake, args: { reason: "x" }, result: detailsResult({ action: "brand-new", reason: "x" }) },
 			{ label: "prompt-shape", tool: "schedule_prompt", definition: prompt, args: { action: "create" }, result: detailsResult({ action: "create", jobs: [] }) },
@@ -1164,8 +1203,29 @@ describe("default control grouping", () => {
 				args: { action: "snapshot", run_id: "run_1" },
 				result: detailsResult(workflowSnapshot({ counts: { total: 2, completed: 1, failed: 1, cancelled: 0, skipped: 0 } })),
 			},
+			{
+				label: "workflow-warnings",
+				tool: "workflow",
+				definition: flow,
+				args: { action: "snapshot", run_id: "run_1" },
+				result: detailsResult({ ...workflowSnapshot(), warnings: ["node a retried"] }),
+			},
+			{
+				label: "workflow-run-failed",
+				tool: "workflow",
+				definition: flow,
+				args: { action: "snapshot", run_id: "run_1" },
+				result: detailsResult(workflowSnapshot({ status: "failed" })),
+			},
+			{
+				label: "workflow-run-cancelled",
+				tool: "workflow",
+				definition: flow,
+				args: { action: "snapshot", run_id: "run_1" },
+				result: detailsResult(workflowSnapshot({ status: "cancelled" })),
+			},
 			{ label: "pool-item-error", tool: "workpool", definition: pool, args: { op: "inspect", pool_id: poolId }, result: detailsResult({ pool_id: poolId, status: "open", items: [{ item_id: "wi_1", status: "completed", error: { code: "x" } }] }) },
-			{ label: "pool-refused", tool: "workpool", definition: pool, args: { op: "yield", results: [] }, result: detailsResult({ pool_id: poolId, results: [{ key: "k", status: "refused", error: { code: "yield_conflict" } }] }) },
+			{ label: "pool-refused", tool: "workpool", definition: pool, args: { op: "yield", results: [] }, result: detailsResult({ pool_id: poolId, results: [{ key: "k", status: "refused" }] }) },
 			{ label: "pool-unknown", tool: "workpool", definition: pool, args: { op: "brand-new" }, result: detailsResult({ pool_id: poolId }) },
 			{ label: "media", tool: "kill_bash", definition: session.getToolDefinition("kill_bash"), args: { bash_id: "b1" }, result: { content: [{ type: "image", data: "x", mimeType: "image/png" }] } },
 		];
@@ -1228,7 +1288,7 @@ describe("default control grouping", () => {
 		const rendered = (transcript(host, cards).project()[0] as Grouped).render(80).join("\n");
 		expect(rendered).toContain("kill_bash b1: Killed b1.");
 		expect(rendered).toContain("workflow start build name second started running");
-		expect(rendered).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
+		expect(hasControlCharacters(rendered)).toBe(false);
 	});
 
 	test("a definition that gains a result renderer leaves the projection path", async () => {
@@ -1481,23 +1541,23 @@ describe("thread grouping", () => {
 		const cases: { label: string; tool: string; definition: unknown; args: unknown; result: unknown }[] = [
 			{
 				label: "error",
-				tool: "thread_send",
-				definition: send,
-				args: { thread: "thr_1", message: "x" },
+				tool: "thread_read",
+				definition: session.getToolDefinition("thread_read"),
+				args: { thread: "thr_1" },
 				result: { details: { result: { kind: "error", error: { code: "invalid_arguments" } } } },
 			},
 			{
 				label: "unknown-kind",
-				tool: "thread_send",
-				definition: send,
-				args: { thread: "thr_1", message: "x" },
+				tool: "thread_read",
+				definition: session.getToolDefinition("thread_read"),
+				args: { thread: "thr_1" },
 				result: { details: { result: { kind: "brand-new" } } },
 			},
 			{
 				label: "missing-kind",
-				tool: "thread_send",
-				definition: send,
-				args: { thread: "thr_1", message: "x" },
+				tool: "thread_read",
+				definition: session.getToolDefinition("thread_read"),
+				args: { thread: "thr_1" },
 				result: { details: { result: { thread_id: "thr_1" } } },
 			},
 			{
