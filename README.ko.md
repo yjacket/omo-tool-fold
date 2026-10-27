@@ -62,7 +62,7 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 - **apply_patch:** `apply_patch <cwd 기준 경로 또는 N files> (+추가/-삭제)`. 실제 적용 결과의 줄 수를 보여 줍니다. 부분 실패나 미리보기 데이터가 없는 결과는 원래 출력을 유지합니다.
 - **todo:** 혼자 있을 때는 제목 줄만 그립니다. 예: `todo done: A 확인`. 묶음 안에서도 같은 제목을 씁니다. 전체 목록은 `/todo` 명령과 입력창 아래 todo 위젯에서 볼 수 있습니다.
 - **다음 27개 도구**는 `<tool> <verb> <target>` 형태로 접힙니다: web_search, webfetch, write, memory, look_at, powershell, bash_output, tool_search, task, task_output, task_send, task_cancel, team_create, team_delete, task_create, task_get, task_list, task_update, create_goal, update_goal, get_goal, lsp_diagnostics, lsp_goto_definition, lsp_find_references, lsp_symbols, lsp_prepare_rename, lsp_rename.
-- **bash, glob과 MCP 도구 여섯 개**도 접힙니다: `bash`, `glob`, `mcp__ast_grep_rewrite`, `mcp__ast_grep_scan`, `mcp__ast_grep_search`, `mcp_context7_query-docs`, `mcp_context7_resolve-library-id`, `mcp_grep_app_searchGitHub`. `bash`는 `powershell`과 같은 셸 줄을 쓰고, MCP 줄은 원래 미리보기 문구를 유지합니다.
+- **bash, glob과 MCP 도구 여섯 개**도 접힙니다: `bash`, `glob`, `mcp__ast_grep_rewrite`, `mcp__ast_grep_scan`, `mcp__ast_grep_search`, `mcp_context7_query-docs`, `mcp_context7_resolve-library-id`, `mcp_grep_app_searchGitHub`. `bash`는 `powershell`과 같은 셸 줄을 쓰고, MCP 줄은 원래 미리보기 문구를 유지합니다. `bash`는 정의에 `renderCall`과 `renderResult`가 모두 있을 때만 접히며, 현재 터미널 `bash`에는 두 슬롯이 없어 카드가 원래대로 남습니다.
   - verb는 `op`, `action`, `command` 인자가 짧은 한 단어일 때 그 값입니다.
   - target은 `task_summary`, `description`, `summary`, `query`, `url`, `objective`, `goal`, `prompt`, `message`, `command`, `file_path`, `path`, `filePath`, `pattern`, `name`, `task_id`, `to`, `bash_id`, `status`, `reason` 가운데 처음 나오는 인자의 비어 있지 않은 첫 줄입니다. 경로는 cwd 기준으로 줄여 보여 줍니다.
 
