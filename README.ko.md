@@ -88,7 +88,7 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클�
 - 원래 표시로 남는 도구(read, grep, find, ls, ask_user_question, 미디어, MCP 스텁 등)가 나오면 묶음이 끊깁니다.
 - 백그라운드 셸 영수증(details.background와 bash_id)은 `background <id>`로 표시됩니다. 작업이 시작되었다는 뜻이며 끝났다는 뜻이 아닙니다.
 - Ctrl+O를 누르거나 머리 줄을 클릭하면 머리 줄 아래에 원래 상자들이 나옵니다. 한 번 더 하면 다시 접힙니다. 이 동작은 바뀌지 않았습니다.
-- 아직 실행 중인 구성원이 있거나 아직 끝나지 않은 영수증을 보고하면(armed 상태의 monitor, 스냅샷이 완료되지 않은 started/detached workflow 실행, queued/started/queued_offline 스레드 전달) 머리 줄에 스피너가 돌고 `Running N evals`(섞인 묶음은 `Running N tools · ...`)로 바뀝니다. 모두 정리된 세션이라도 이런 영수증 때문에 `Running`이 남을 수 있습니다. 그 줄에는 `py running 데이터 분석`이나 `monitor armed <id> ...`처럼 상태 단어가 나옵니다. 백그라운드 셸 실행은 완료로 보지 않습니다. 그 줄은 `background <id>`로 표시되며, 실행을 시작했다는 뜻이지 완료를 뜻하지 않습니다.
+- 아직 실행 중인 구성원이 있거나 그 영수증이 끝나지 않은 작업을 보고하면(상태가 `complete`가 아닌 구성원), 머리 줄에 스피너가 돌고 `Running N evals`(섞인 묶음은 `Running N tools · ...`)로 바뀝니다. 다른 구성원이 모두 정리된 세션이어도 마찬가지입니다. 예를 들어 armed 상태의 monitor, scheduled 상태의 wakeup, queued 또는 in-flight 상태의 예약 프롬프트, queued 상태의 workflow 전송이나 아직 완료되지 않은 workflow 실행, queued/open/closing 상태의 workpool, steered/started/queued/queued_offline 상태의 스레드 전달이 있습니다. 완료 확인은 `Ran`으로 표시됩니다. 예를 들어 중지된 wakeup이나 실행 중이 아니던 취소된 예약 프롬프트입니다. 그 줄에는 `py running 데이터 분석`이나 `monitor armed <id> ...`처럼 상태 단어가 나옵니다. 백그라운드 셸 실행 줄은 작업을 시작했다는 사실만 기록하며 끝났다는 뜻이 아니고, 그 자체로 머리 줄을 `Running`으로 만들지 않습니다.
 - 줄 수 제한은 없습니다.
 
 ## 숨기는 알림
