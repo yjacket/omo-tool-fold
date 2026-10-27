@@ -350,7 +350,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: `.omo/evidence/comprehensive-grouping/task-9.md`, unit/component output and source/diff audit.
   - Commit: N - evidence-only gate; each producer commit must already be independently buildable and tested.
 
-- [ ] 10. Capture Claude-shaped real-TUI proof across widths and themes
+- [x] 10. Capture Claude-shaped real-TUI proof across widths and themes
   - Recommended task executor category: quick - execute the fixed replay matrix and inspect its real surface.
   - Scope: task-owned processes/browser/scratch and `.omo/evidence/comprehensive-grouping/claude-*`, `history-claude`; no source edits.
   - What to do: execute all four documented Claude width/theme invocations plus the unmodified original-history scenario. Inspect every captured xterm PNG and action trace. Each scenario includes Ctrl+O twice, a real PTY header click twice, settled background/queued state distinctions, errors/decisions/media and native/default fallback. Real-component G2/G3 evidence owns the live transition proof.
@@ -362,7 +362,7 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Evidence: the five named directories, all ANSI/text/PNG/actions/report/cleanup files and `task-10.md`.
   - Commit: N - evidence only; fix any feature failure in its smallest owning production task before recapturing affected cases.
 
-- [ ] 11. Capture Codex-shaped real-TUI proof and complete resource teardown
+- [x] 11. Capture Codex-shaped real-TUI proof and complete resource teardown
   - Recommended task executor category: quick - independent provider fixture and disjoint evidence paths.
   - Scope: task-owned processes/browser/scratch and `.omo/evidence/comprehensive-grouping/codex-*`, `history-codex`; no source edits.
   - What to do: run the four Codex width/theme invocations and original-history scenario; inspect every xterm PNG. Use empty Codex reasoning exactly as existing history fixture does, not a renamed Claude fixture. After all owned child processes exit, remove only this run's recorded scratch/cache/profile paths.
@@ -381,6 +381,20 @@ All nodes write bounded evidence receipts to `.omo/evidence/comprehensive-groupi
   - Closes: IS-2 regression found by review-qa-2.md (a stopped wakeup kept the group header Running indefinitely).
   - Acceptance criteria: a test proves [eval, schedule_wakeup stopped] reads "Ran 2 tools" while [eval, schedule_wakeup scheduled] still reads "Running 2 tools"; reverting the status makes it fail; `bun test` exits 0; lsp_diagnostics clean.
   - Commit: Y - `tool-fold: settle stopped wakeup receipts as finished`.
+
+- [x] 13. Use exact documented result envelopes in the replay fixture (follow-up: invalid proof found by root after task 10/11)
+  - Recommended task executor category: unspecified-high - the PTY harness needed two live repairs; envelopes must match product admission and the installed runtime.
+  - Scope: `qa/history-window-replay.mjs` only; evidence under `.omo/evidence/comprehensive-grouping/`.
+  - What to do: the fixture gives schedule_wakeup no details.reason, schedule_prompt no args.action and jobs without {state, job}, schedule_prompt cancel job_id instead of id, workflow snapshots without counts/nodes, and workpool records nested under details.pool. Those eligible receipts therefore render native in the real engine, and the PTY never proves that they group. Rewrite every eligible fixture envelope to the installed runtime / plan-documented shape. Intentionally unsafe fixtures stay as they are.
+  - Acceptance criteria: in every comprehensive run, the native-defaults scene shows one Running group holding kill_bash, monitor, schedule_wakeup (60s clamped), schedule_prompt (no-runner), workflow (running) and workpool (open), and the receipts scene shows eligible queued_offline / in-flight receipts inside a group while the human_input monitor stays a native boundary. All 8 matrix runs and both history runs exit 0 with every assertion true, and an independent reviewer confirms.
+  - Commit: Y - `tool-fold: use documented result envelopes in the grouping replay fixture`.
+
+- [x] 14. Document that a slotless runtime bash stays native (follow-up: PLAN CONFLICT found by fix-13)
+  - Recommended task executor category: quick - one sentence in three docs.
+  - Scope: `README.md`, `README.ko.md`, `CLAUDE.md`.
+  - What to do: the installed runtime's terminal `bash` definition (builtin/terminal/tools/bash.js, exposed to models through eval) has neither renderCall nor renderResult. Per the no-synthesized-slots guardrail, its top-level cards therefore stay native, while powershell, glob and the other renderer-backed names keep two slots and fold. State that bash folds only when its definition has both renderer slots. Change nothing else.
+  - Acceptance criteria: both READMEs and CLAUDE.md say the same thing, the claim traces to the report's definition table and the runtime source, and an independent reviewer confirms.
+  - Commit: Y - `tool-fold: note that slotless runtime bash cards stay native`.
 
 ## Final verification wave
 > Runs after ALL todos. ALL must APPROVE. The user preapproved this planning scope and requested no repeated approval questions; report the verified outcome without a new confirmation gate. Any new destructive/external action remains outside scope.
