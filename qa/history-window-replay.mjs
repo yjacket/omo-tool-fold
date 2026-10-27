@@ -48,7 +48,7 @@ function dimension(name, fallback, allowed) {
 const COLS = comprehensive ? dimension("QA_COLS", 150, [80, 150]) : 150;
 const ROWS = comprehensive ? dimension("QA_ROWS", 45, [45]) : 45;
 const themeArg = comprehensive ? (process.env.QA_THEME ?? "dark") : "grok-day";
-if (themeArg !== "dark" && !existsSync(resolve(themeArg))) throw new Error(`QA_THEME file not found: ${themeArg}`);
+if (comprehensive && themeArg !== "dark" && !existsSync(resolve(themeArg))) throw new Error(`QA_THEME file not found: ${themeArg}`);
 const lightRun = comprehensive && themeArg !== "dark";
 
 const scratchParent = resolve(process.env.QA_ROOT ?? tmpdir());
