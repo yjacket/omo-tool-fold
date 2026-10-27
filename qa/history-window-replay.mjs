@@ -171,11 +171,13 @@ const RENDER_DEADLINE_MS = 10000;
 
 const comprehensiveScenes = [
   { name: "todo-mixed", markers: ["QA_ORIGINAL_COLLAPSED", "QA_TODO_ALPHA", "QA_TODO_BETA", "edit package.json", "QA_PATCH_MAIN", "QA_GLOB_MAIN"], foldMarkers: ["Ran 3 tools · eval 1 · todo 1 · edit 1", KOREAN_MARKERS[0], "todo init (1 phase, 2 tasks)", "edit package.json (+1/-1)", "QA_PATCH_MAIN", "glob qa/**/*.ts in src"] },
-  { name: "native-defaults", markers: ["QA_KILL_RECEIPT", "QA_MONITOR_ARMED", "QA_WAKE_CLAMPED", "QA_SCHEDULE_NO_RUNNER", "QA_WORKFLOW_RUNNING", "QA_WORKPOOL_OPEN"], foldMarkers: ["Running 2 tools · kill_bash 1 · monitor 1", "kill_bash bash_qa_old: QA_KILL_RECEIPT killed=1", KOREAN_MARKERS[1], "QA_WAKE_CLAMPED", "QA_SCHEDULE_NO_RUNNER", "QA_WORKFLOW_RUNNING", "QA_WORKPOOL_OPEN"] },
+  // Grouped rows, not native text: a native rendering of any eligible card fails the scene.
+  // The full header exceeds 80 columns, so only its fitting prefix is required.
+  { name: "native-defaults", markers: ["QA_KILL_RECEIPT", "QA_MONITOR_ARMED", "QA_WAKE_CLAMPED", "QA_SCHEDULE_NO_RUNNER", "QA_WORKFLOW_RUNNING", "QA_WORKPOOL_OPEN"], foldMarkers: ["Running 6 tools · kill_bash 1 · monitor 1 · schedule_wakeup 1", "kill_bash bash_qa_old: QA_KILL_RECEIPT killed=1", KOREAN_MARKERS[1], "schedule_wakeup scheduled 60s clamped: QA_WAKE_CLAMPED", "schedule_prompt no-runner create 1 pending job", "workflow snapshot QA_WORKFLOW_RUNNING snapshot running", "workpool inspect QA_WORKPOOL_OPEN open · 1 item (queued 1)"] },
   { name: "mcp", markers: ["QA_MCP_PREVIEW_MAIN", "QA_MCP_STUB_INACTIVE"], foldMarkers: ["QA_MCP_QUERY_MAIN · QA_MCP_PREVIEW_MAIN", "QA_MCP_STUB_INACTIVE"] },
   { name: "semantic-failures", markers: ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR", "QA_NATIVE_BASH_INPUT", "QA_NATIVE_BASH_RESIZE"], foldMarkers: ["QA_SEMANTIC_WORKFLOW_ERROR", "QA_SEMANTIC_WORKPOOL_CANCELLED", "QA_SEMANTIC_THREAD_QUESTION", "QA_SEMANTIC_THREAD_ERROR", "QA_NATIVE_BASH_INPUT", "QA_NATIVE_BASH_RESIZE"] },
   { name: "decisions-media", markers: ["QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_NATIVE_HTML"], foldMarkers: ["QA_DECISION_ANSWER", "QA_MEDIA_IMAGE", "QA_NATIVE_HTML"] },
-  { name: "receipts", markers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"], foldMarkers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"] },
+  { name: "receipts", markers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "QA_THREAD_STARTED", "QA_QUEUED_OFFLINE", "QA_HUMAN_BOUNDARY", "QA_IN_FLIGHT"], foldMarkers: ["QA_BACKGROUND_RECEIPT", "QA_FOREGROUND_EXIT_0", "thread_send thr_qa_live started", "thread_send thr_qa_queue queued_offline · 스레드 요약 전달", "QA_HUMAN_BOUNDARY", "schedule_prompt in-flight cancel job_qa", "schedule_prompt list 1 pending job"] },
   { name: "native-exploration", markers: ["Explored", "Read a.ts", "Search QA_GREP_PATTERN in src", "List src"], foldMarkers: ["Explored", "Read a.ts", "Search QA_GREP_PATTERN in src"] },
   // The last scene keeps one mixed renderer-backed/projection-only group inside the final
   // viewport: the main-screen TUI cannot scroll scrollback (a wheel report yields the mouse).
@@ -236,10 +238,18 @@ function comprehensiveFixture() {
 
   tool("kill_bash", { bash_id: "bash_qa_old" }, "QA_KILL_RECEIPT killed=1", { bash_id: "bash_qa_old", killed: 1 });
   tool("monitor", { description: MONITOR_DESCRIPTION }, "QA_MONITOR_ARMED", { monitor: true, monitor_id: "mon_qa", bash_id: "bash_qa" });
-  tool("schedule_wakeup", { delaySeconds: 1 }, "QA_WAKE_CLAMPED delay=60 clamped", { action: "scheduled", delaySeconds: 60, clamped: true });
-  tool("schedule_prompt", { prompt: "QA_SCHEDULE" }, "QA_SCHEDULE_NO_RUNNER", { action: "create", jobs: [{ id: "job_qa" }], runnerAvailable: false, inFlight: false });
-  tool("workflow", { action: "snapshot", run_id: "wf_qa_main" }, "QA_WORKFLOW_RUNNING", { kind: "snapshot", snapshot: { run_id: "wf_qa_main", status: "running" } });
-  tool("workpool", { op: "inspect", pool_id: "pool_qa" }, "QA_WORKPOOL_OPEN", { op: "inspect", pool: { pool_id: "pool_qa", name: "QA_POOL_MAIN", status: "open", items: [] } });
+  // Eligible envelopes follow the installed runtime (loop/tools.js, schedule/tool.js) and the
+  // plan's structured result contract, so the real engine admits them into the group.
+  tool("schedule_wakeup", { delaySeconds: 1, reason: "QA_WAKE_CLAMPED", prompt: "QA_WAKE_PROMPT" }, "QA_WAKE_CLAMPED delay=60 clamped",
+    { ok: true, action: "scheduled", loopId: "loop_qa", wakeupId: "wake_qa", requestedDelaySeconds: 1, delaySeconds: 60, clamped: true,
+      dueAt: "2026-10-23T00:01:00.000Z", reason: "QA_WAKE_CLAMPED", prompt: "QA_WAKE_PROMPT", noop: false, noopStreak: 0 });
+  tool("schedule_prompt", { action: "create", prompt: "QA_SCHEDULE", delaySeconds: 600 }, "QA_SCHEDULE_NO_RUNNER",
+    { action: "create", jobs: [{ state: "pending", job: { id: "job_qa", prompt: "QA_SCHEDULE" } }], runnerAvailable: false });
+  tool("workflow", { action: "snapshot", run_id: "wf_qa_main" }, "QA_WORKFLOW_RUNNING", { kind: "snapshot", run_id: "wf_qa_main", snapshot: {
+    name: "QA_WORKFLOW_RUNNING", status: "running", counts: { total: 2, completed: 1, failed: 0, cancelled: 0, skipped: 0 },
+    nodes: [{ id: "plan", state: "completed" }, { id: "build", state: "running" }] } });
+  tool("workpool", { op: "inspect", pool_id: "pool_qa" }, "QA_WORKPOOL_OPEN",
+    { pool_id: "pool_qa", name: "QA_WORKPOOL_OPEN", status: "open", items: [{ item_id: "wi_qa_1", status: "queued" }] });
   assistant([{ type: "text", text: "QA_BREAK_2" }]);
 
   tool("mcp_context7_query-docs", { libraryId: "/qa/lib", query: "QA_MCP_QUERY_MAIN" }, "QA_MCP_PREVIEW_MAIN",
@@ -248,7 +258,7 @@ function comprehensiveFixture() {
   assistant([{ type: "text", text: "QA_BREAK_3" }]);
 
   tool("workflow", { action: "snapshot", run_id: "wf_qa_error" }, "QA_SEMANTIC_WORKFLOW_ERROR", { kind: "error", error: { code: "QA_WORKFLOW_FAILED" } });
-  tool("workpool", { op: "inspect", pool_id: "pool_qa_bad" }, "QA_SEMANTIC_WORKPOOL_CANCELLED", { op: "inspect", pool: { pool_id: "pool_qa_bad", status: "cancelled", items: [] } });
+  tool("workpool", { op: "inspect", pool_id: "pool_qa_bad" }, "QA_SEMANTIC_WORKPOOL_CANCELLED", { pool_id: "pool_qa_bad", name: "QA_POOL_BAD", status: "cancelled", items: [] });
   tool("thread_report", { kind: "question", binding_id: "bind_qa" }, "QA_SEMANTIC_THREAD_QUESTION", { result: { kind: "ok", binding_id: "bind_qa", report_kind: "question" } });
   tool("thread_send", { thread_id: "thr_qa_bad", message: "QA" }, "QA_SEMANTIC_THREAD_ERROR", { result: { kind: "error", error: { code: "invalid_arguments" } } });
   tool("bash_input", { bash_id: "bash_qa", input: "x" }, "QA_NATIVE_BASH_INPUT ignored-key", undefined);
@@ -264,10 +274,18 @@ function comprehensiveFixture() {
   tool("bash", { command: "echo QA_BACKGROUND_RECEIPT", description: "백그라운드 작업 시작", run_in_background: true }, "QA_BACKGROUND_RECEIPT bash_qa_bg",
     { background: true, bash_id: "bash_qa_bg" });
   tool("bash", { command: "echo QA_FOREGROUND_EXIT_0" }, "QA_FOREGROUND_EXIT_0", { exitCode: 0 });
+  // The installed bash definition has no renderer slots, so bash stays native here; this eligible
+  // receipt gives the queued_offline send its group neighbour.
+  tool("thread_send", { thread_id: "thr_qa_live", message: "QA_THREAD_STARTED" }, "QA_THREAD_STARTED",
+    { result: { kind: "ok", thread_id: "thr_qa_live", delivery: { kind: "started" } } });
   tool("thread_send", { thread_id: "thr_qa_queue", message: "QA_QUEUED_OFFLINE", summary: "스레드 요약 전달" }, "QA_QUEUED_OFFLINE",
     { result: { kind: "ok", thread_id: "thr_qa_queue", delivery: { kind: "queued_offline" } } });
   tool("monitor", { human_input: true }, "QA_HUMAN_BOUNDARY", { monitor: true, monitor_id: "mon_human", bash_id: "bash_human" });
-  tool("schedule_prompt", { action: "cancel", job_id: "job_qa" }, "QA_IN_FLIGHT", { action: "cancel", jobs: [{ id: "job_qa" }], runnerAvailable: true, inFlight: true });
+  tool("schedule_prompt", { action: "cancel", id: "job_qa" }, "QA_IN_FLIGHT",
+    { action: "cancel", jobs: [{ state: "pending", job: { id: "job_qa", prompt: "QA_SCHEDULE" } }], inFlight: true });
+  // A lone projection-only card stays native, so the in-flight cancel needs an eligible neighbour.
+  tool("schedule_prompt", { action: "list" }, "QA_SCHEDULE_LIST",
+    { action: "list", jobs: [{ state: "pending", job: { id: "job_qa_next", prompt: "QA_SCHEDULE_NEXT" } }] });
   assistant([{ type: "text", text: "QA_BREAK_6" }]);
 
   tool("read", { path: "src/a.ts" }, "QA_READ_FILE", undefined);
@@ -1010,7 +1028,7 @@ try {
       { name: "unsafe cards outside compact runs", ok: UNSAFE_MARKERS.every((marker) => finalScrollback.includes(marker)) },
       { name: "definition provenance and slots", ok: shapeFailures.length === 0 && (provenance.failures ?? []).length === 0, failures: [...(provenance.failures ?? []), ...shapeFailures] },
       { name: "synthetic fixtures never execute", ok: executeCalls === 0 && !stream.toString().includes("QA_MUST_NOT_EXECUTE"), executeCalls },
-      { name: "fixture tool-card count", ok: sessionFixture.toolCount === 33, actual: sessionFixture.toolCount },
+      { name: "fixture tool-card count", ok: sessionFixture.toolCount === 35, actual: sessionFixture.toolCount },
       { name: "mouse mode enabled", ok: report.mouseMode?.ready === true },
       { name: "outside-header click is a no-op", ok: report.mouseProof.outsideScreenEqual === true && mouseEvents.length > 0 &&
         report.mouseProof.outsideAfterCards === report.mouseProof.outsideBeforeCards, proof: report.mouseProof },
