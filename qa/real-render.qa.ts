@@ -33,6 +33,8 @@ senpi.initTheme("light");
 // interactive-mode.js exposes ctx.ui.theme as this live proxy.
 const liveTheme = themeModule.theme;
 
+let executeCalls = 0;
+
 const defs: Record<string, unknown> = {
 	eval: {
 		renderCall(args: { summary?: string }) {
@@ -43,8 +45,40 @@ const defs: Record<string, unknown> = {
 			if (text) return new tui.Text(text, 0, 0);
 			return new tui.Text(`EVAL-FULL-OUTPUT ${JSON.stringify(result.details?.cells?.[0]?.status)}`, 0, 0);
 		},
+		execute() {
+			executeCalls++;
+			throw new Error("eval fixture execute must not run");
+		},
 	},
 };
+
+/** A synthetic definition. Renderer slots exist only when a case supplies them. */
+function fixture(name: string, slots: Record<string, unknown> = {}): Mod {
+	const definition: Mod = {
+		...slots,
+		execute() {
+			executeCalls++;
+			throw new Error(`${name} fixture execute must not run`);
+		},
+	};
+	defs[name] = definition;
+	return definition;
+}
+
+function twoSlot(name: string, callText: string, resultText: string): Mod {
+	return fixture(name, {
+		renderCall(args: unknown) {
+			return new tui.Text(`${callText} ${JSON.stringify(args)}`, 0, 0);
+		},
+		renderResult(result: unknown) {
+			return new tui.Text(`${resultText} ${JSON.stringify(result)}`, 0, 0);
+		},
+	});
+}
+
+function noSlot(name: string): Mod {
+	return fixture(name);
+}
 senpi.AgentSession.prototype.getToolDefinition = (name: string) => defs[name];
 mock.module("@code-yeongyu/senpi", () => senpi);
 mock.module("@earendil-works/pi-tui", () => tui);
@@ -52,28 +86,9 @@ mock.module("@earendil-works/pi-tui", () => tui);
 type Handler = (event: unknown, ctx: unknown) => void;
 type Harness = { im: Mod; notices: string[]; fire(event: string, payload: unknown): void };
 
-/** A fresh extension copy (replacing the global implementation) plus a fresh stub InteractiveMode. */
-async function harness(caseName: string, themeThrows = false): Promise<Harness> {
-	const handlers = new Map<string, Handler[]>();
-	const notices: string[] = [];
-	const pi = { on: (event: string, handler: Handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]) };
-	const ext = await import(`../extension/tool-fold.ts?case=${caseName}`);
-	await ext.default(pi);
-	let armed = false;
-	const ui = {
-		notify: (message: string) => notices.push(message),
-		get theme() {
-			if (armed) throw new Error("qa: theme unavailable");
-			return liveTheme;
-		},
-	};
-	const fire = (event: string, payload: unknown) => {
-		for (const handler of handlers.get(event) ?? []) handler(payload, { ui });
-	};
-	fire("session_start", { reason: "startup" });
-	armed = themeThrows;
+/** A stub InteractiveMode instance; it owns its data because some names are prototype accessors. */
+function stubIm(): Mod {
 	const im = Object.create(senpi.InteractiveMode.prototype);
-	// Own data properties: some of these names are accessors on the prototype.
 	const fields: Record<string, unknown> = {
 		chatContainer: new ExplorationTranscriptContainer({
 			tailBudget: 60,
@@ -96,7 +111,29 @@ async function harness(caseName: string, themeThrows = false): Promise<Harness> 
 	for (const [key, value] of Object.entries(fields)) {
 		Object.defineProperty(im, key, { value, writable: true, configurable: true, enumerable: true });
 	}
-	return { im, notices, fire };
+	return im;
+}
+
+async function harness(caseName: string, themeThrows = false): Promise<Harness> {
+	const handlers = new Map<string, Handler[]>();
+	const notices: string[] = [];
+	const pi = { on: (event: string, handler: Handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]) };
+	const ext = await import(`../extension/tool-fold.ts?case=${caseName}`);
+	await ext.default(pi);
+	let armed = false;
+	const ui = {
+		notify: (message: string) => notices.push(message),
+		get theme() {
+			if (armed) throw new Error("qa: theme unavailable");
+			return liveTheme;
+		},
+	};
+	const fire = (event: string, payload: unknown) => {
+		for (const handler of handlers.get(event) ?? []) handler(payload, { ui });
+	};
+	fire("session_start", { reason: "startup" });
+	armed = themeThrows;
+	return { im: stubIm(), notices, fire };
 }
 
 const thinking = { type: "thinking", thinking: "t", startedAt: 1000, endedAt: 1001 };
@@ -133,8 +170,8 @@ function add(h: Harness, ...children: Mod[]): void {
 	for (const child of children) h.im.chatContainer.addChild(child);
 }
 
-function render(h: Harness): { ansi: string[]; plain: string[] } {
-	const ansi: string[] = h.im.chatContainer.render(150);
+function render(h: Harness, width = 150): { ansi: string[]; plain: string[] } {
+	const ansi: string[] = h.im.chatContainer.render(width);
 	return { ansi, plain: ansi.map((line) => Bun.stripANSI(line).trimEnd()) };
 }
 
@@ -173,6 +210,477 @@ function expectR1Collapsed(plain: string[]): void {
 
 function show(label: string, plain: string[]): void {
 	console.log(`--- ${label}\n${plain.filter((line) => line.length > 0).join("\n")}`);
+}
+
+/** Creates a real ToolExecutionComponent through the installed InteractiveMode method. */
+function toolCard(h: Harness, name: string, args: Record<string, unknown>, result?: Mod, partial = false): Mod {
+	const card = h.im.createToolExecutionComponent(name, `c${++callSeq}`, args);
+	card.markExecutionStarted();
+	card.setArgsComplete();
+	if (result !== undefined) card.updateResult(result, partial);
+	return card;
+}
+
+/** The actual TuiMainScreen renderer; each frame is one doRender pass. */
+function mainScreen(h: Harness, columns = 150): { render(): { ansi: string[]; plain: string[] }; screen: Mod } {
+	const terminal = { columns, rows: 45, write() {}, hideCursor() {}, showCursor() {} };
+	const screen = new tui.TuiMainScreen(terminal);
+	screen.addChild(h.im.chatContainer);
+	return {
+		screen,
+		render() {
+			screen.doRender();
+			const ansi: string[] = screen.previousLines;
+			return { ansi, plain: ansi.map((line: string) => Bun.stripANSI(line).trimEnd()) };
+		},
+	};
+}
+
+function groupIn(h: Harness): Mod | undefined {
+	return (h.im.chatContainer.project() as Mod[]).find((child) => typeof child?.setMembers === "function");
+}
+
+function hasGroup(h: Harness): boolean {
+	return groupIn(h) !== undefined;
+}
+
+/** Every case keeps its source cards/results by identity and executes no fixture. */
+function expectNoSideEffects(h: Harness, source: readonly Mod[], results: readonly unknown[]): void {
+	expect(h.im.chatContainer.children).toEqual(source);
+	expect(h.im.chatContainer.children.every((child: Mod, index: number) => child === source[index])).toBe(true);
+	expect(results.every((result) => result !== undefined)).toBe(true);
+	expect(executeCalls).toBe(0);
+}
+
+const textResult = (text: string, details: Record<string, unknown> = {}, isError = false) => ({
+	content: [{ type: "text", text }],
+	isError,
+	details,
+});
+
+const evalResult = (summary: string, status = "complete", isError = false) => ({
+	content: [{ type: "text", text: `EVAL-RESULT ${summary}` }],
+	isError,
+	details: { cells: [{ status, language: "js", summary }] },
+});
+
+const okThread = (extra: Record<string, unknown> = {}) => ({
+	content: [],
+	details: { result: { kind: "ok", ...extra } },
+});
+
+// G8's pre-load baseline must run before the extension is imported. Importing the module installs
+// the prototype hook; creating a card does not.
+const g8Baseline = (() => {
+	const im = stubIm();
+	const definition = noSlot("thread_create");
+	const lineCounts = [9, 10, 11];
+	const frames = lineCounts.map((count) => {
+		const card = im.createToolExecutionComponent("thread_create", `pre-g8-${count}`, { name: "G8" });
+		card.markExecutionStarted();
+		card.setArgsComplete();
+		card.updateResult({
+			content: [{ type: "text", text: Array.from({ length: count }, (_, index) => `LINE-${index + 1}`).join("\n") }],
+			details: {},
+		}, false);
+		const ansi: string[] = card.render(80);
+		return { count, ansi, plain: ansi.map((line) => Bun.stripANSI(line).trimEnd()) };
+	});
+	return { definition, frames };
+})();
+
+test("G1 todo mixed run folds todo titles with eval in order", async () => {
+	executeCalls = 0;
+	const h = await harness("g1");
+	twoSlot("todo", "TODO-CALL", "TODO-NATIVE-RESULT");
+	const start = toolCard(h, "todo", { op: "start", task: "계획" }, textResult("", { op: "start" }));
+	const evalCardG1 = toolCard(h, "eval", { language: "js", summary: "검증" }, evalResult("검증"));
+	const done = toolCard(h, "todo", { op: "done", task: "계획" }, textResult("", { op: "done" }));
+	const source = [start, evalCardG1, done];
+	const results = source.map((card) => card.result);
+	add(h, ...source);
+	const out = render(h);
+	evidence("g1-todo-mixed", out);
+	show("G1", out.plain);
+	expect(hasLine(out.plain, "└ todo start: 계획")).toBe(true);
+	expect(count(out.plain, "todo done: 계획")).toBe(1);
+	expect(count(out.plain, "todo start: 계획")).toBe(1);
+	expect(count(out.plain, "Ran 3 tools · todo 2 · eval 1")).toBe(1);
+	expect(out.plain.some((line) => line.includes("eval js ✓ 검증"))).toBe(true);
+	expect(inOrder(out.plain, "todo start: 계획", "eval js ✓ 검증", "todo done: 계획")).toBe(true);
+	expectNoSideEffects(h, source, results);
+});
+
+test("G2 default control native fallback frames call partial settled failure", async () => {
+	executeCalls = 0;
+	const h = await harness("g2");
+	noSlot("kill_bash");
+	const running = toolCard(h, "eval", { language: "js", summary: "A 조사" });
+	const control = toolCard(h, "kill_bash", { bash_id: "b1" });
+	const source = [running, control];
+	add(h, ...source);
+	const screen = mainScreen(h);
+	const call = screen.render();
+	evidence("g2-call", call);
+	show("G2 call", call.plain);
+	expect(count(call.plain, "Running 2 tools · eval 1 · kill_bash 1")).toBe(1);
+	expect(call.plain.some((line) => line.includes("kill_bash b1"))).toBe(true);
+
+	const partial = evalResult("A 조사");
+	running.updateResult(partial, true);
+	const partialFrame = screen.render();
+	evidence("g2-partial", partialFrame);
+	show("G2 partial", partialFrame.plain);
+	expect(count(partialFrame.plain, "Running 2 tools")).toBe(1);
+	expect(partialFrame.plain.some((line) => line.includes("A 조사"))).toBe(true);
+	expect(count(partialFrame.plain, "Ran 2 tools")).toBe(0);
+
+	const settledEval = evalResult("A 조사");
+	const settledControl = textResult("killed 1 session", {});
+	running.updateResult(settledEval, false);
+	control.updateResult(settledControl, false);
+	const settled = screen.render();
+	evidence("g2-settled", settled);
+	show("G2 settled", settled.plain);
+	expect(count(settled.plain, "Ran 2 tools · eval 1 · kill_bash 1")).toBe(1);
+	expect(settled.plain.some((line) => line.includes("kill_bash b1: killed 1 session"))).toBe(true);
+
+	const failed = textResult("QA-KILL-ERROR", {}, true);
+	control.updateResult(failed, false);
+	const failure = screen.render();
+	evidence("g2-failure", failure);
+	show("G2 failure", failure.plain);
+	expect(count(failure.plain, "Ran 2 tools")).toBe(0);
+	expect(failure.plain.some((line) => line.includes("kill_bash"))).toBe(true);
+	expect(failure.plain.some((line) => line.includes("QA-KILL-ERROR"))).toBe(true);
+	expect(control.result).toBe(failed);
+	expect(executeCalls).toBe(0);
+});
+
+test("G3 thread lifecycle and background queued receipts stay distinct", async () => {
+	executeCalls = 0;
+	const h = await harness("g3");
+	noSlot("thread_send");
+	noSlot("thread_handoff");
+	twoSlot("bash", "BASH-CALL", "BASH-NATIVE");
+	const send = toolCard(h, "thread_send", { thread: "t1", summary: "보고" });
+	const handoff = toolCard(h, "thread_handoff", { thread: "t2" });
+	const background = toolCard(h, "bash", { description: "긴 작업", command: "sleep 99" });
+	const source = [send, handoff, background];
+	add(h, ...source);
+	const screen = mainScreen(h);
+	const call = screen.render();
+	evidence("g3-call", call);
+	expect(count(call.plain, "Running 3 tools · thread_send 1 · thread_handoff 1 · bash 1")).toBe(1);
+
+	const queued = okThread({ delivery: { kind: "queued_offline" }, thread_id: "t1" });
+	const started = okThread({ delivery: { kind: "started" }, thread_id: "t2" });
+	const launched = textResult("started job", { background: true, bash_id: "bg-42" });
+	background.updateResult(launched, true);
+	const partial = screen.render();
+	evidence("g3-partial", partial);
+	expect(count(partial.plain, "Running 3 tools")).toBe(1);
+	expect(partial.plain.some((line) => line.includes("background bg-42"))).toBe(true);
+	send.updateResult(queued, false);
+	handoff.updateResult(started, false);
+	background.updateResult(launched, false);
+	const settled = screen.render();
+	evidence("g3-settled", settled);
+	show("G3 settled", settled.plain);
+	// A queued/started delivery is a receipt, not completion, so the header stays Running.
+	expect(count(settled.plain, "Running 3 tools")).toBe(1);
+	expect(settled.plain.some((line) => line.includes("thread_send t1 queued_offline"))).toBe(true);
+	expect(settled.plain.some((line) => line.includes("thread_handoff t2 started"))).toBe(true);
+	expect(settled.plain.some((line) => line.includes("bash 긴 작업 background bg-42"))).toBe(true);
+	expect(settled.plain.some((line) => line.includes("queued_offline"))).toBe(true);
+	expect(settled.plain.some((line) => line.includes("started") && !line.includes("queued_offline"))).toBe(true);
+	expect(source.every((card, index) => card.result === [queued, started, launched][index])).toBe(true);
+
+	const failedThread = { content: [], details: { result: { kind: "error", error: { code: "invalid_arguments" } } } };
+	send.updateResult(failedThread, false);
+	const failure = screen.render();
+	evidence("g3-failure", failure);
+	show("G3 failure", failure.plain);
+	expect(count(failure.plain, "Running 3 tools")).toBe(0);
+	expect(failure.plain.some((line) => line.includes("thread_send"))).toBe(true);
+	expect(h.im.chatContainer.children).toEqual(source);
+	expect(send.result).toBe(failedThread);
+	expect(executeCalls).toBe(0);
+});
+
+test("G4 full MCP and shell glob rows retain previews and targets", async () => {
+	executeCalls = 0;
+	const h = await harness("g4");
+	twoSlot("mcp__ast_grep_search", "MCP-SEARCH-CALL", "MCP-SEARCH-RESULT");
+	twoSlot("mcp__ast_grep_rewrite", "MCP-REWRITE-CALL", "MCP-REWRITE-RESULT");
+	twoSlot("bash", "BASH-CALL", "BASH-RESULT");
+	twoSlot("glob", "GLOB-CALL", "GLOB-RESULT");
+	const searchResult = textResult("search body", { server: "ast-grep", tool: "search", preview: "src/a.ts:1: match" });
+	const rewriteResult = textResult("rewrite body", { server: "ast-grep", tool: "rewrite", preview: "(empty result)" });
+	const shellResult = textResult("done", { background: false });
+	const globResult = textResult("src/a.ts\nsrc/b.ts", {});
+	const search = toolCard(h, "mcp__ast_grep_search", { pattern: "foo", paths: ["src"] }, searchResult);
+	const rewrite = toolCard(h, "mcp__ast_grep_rewrite", { pattern: "foo", paths: ["src"], apply: true }, rewriteResult);
+	const shell = toolCard(h, "bash", { description: "타입 검사", command: "bunx tsc" }, shellResult);
+	const glob = toolCard(h, "glob", { pattern: "**/*.ts", path: "C:/repo/src" }, globResult);
+	const source = [search, rewrite, shell, glob];
+	add(h, ...source);
+	const out = render(h);
+	evidence("g4-mcp-shell-glob", out);
+	show("G4", out.plain);
+	expect(count(out.plain, "Ran 4 tools")).toBe(1);
+	expect(out.plain.some((line) => line.includes("mcp__ast_grep_search foo src preview") && line.includes("src/a.ts:1: match"))).toBe(true);
+	expect(out.plain.some((line) => line.includes("mcp__ast_grep_rewrite foo src apply") && line.includes("(empty result)"))).toBe(true);
+	expect(out.plain.some((line) => line.includes("bash 타입 검사"))).toBe(true);
+	expect(out.plain.some((line) => line.includes("glob **/*.ts in src"))).toBe(true);
+	expect(out.plain.some((line) => line.includes("mcp__ast_grep_search") && line.includes("preview"))).toBe(true);
+	expect(out.plain.some((line) => line.includes("mcp__ast_grep_rewrite") && line.includes("apply"))).toBe(true);
+	expect(source.every((card, index) => card.result === [searchResult, rewriteResult, shellResult, globResult][index])).toBe(true);
+	expect(executeCalls).toBe(0);
+});
+
+test("G5 widths 24 80 150 truncate Korean and sanitize controls", async () => {
+	executeCalls = 0;
+	const h = await harness("g5");
+	twoSlot("bash", "BASH-CALL", "BASH-RESULT");
+	twoSlot("glob", "GLOB-CALL", "GLOB-RESULT");
+	const hostile = "한국어 \u001b[31m빨강\u001b[0m\u0007 \u001b]0;injected\u0007 마지막";
+	const bash = toolCard(h, "bash", { description: hostile, command: hostile }, textResult("ok", {}));
+	const glob = toolCard(h, "glob", { pattern: "**/*한국*.ts", path: "C:/repo/한국" }, textResult("ok", {}));
+	const source = [bash, glob];
+	add(h, ...source);
+	for (const width of [24, 80, 150]) {
+		const out = render(h, width);
+		evidence(`g5-width-${width}`, out);
+		show(`G5 ${width}`, out.plain);
+		expect(out.ansi.every((line) => tui.visibleWidth(line) <= width)).toBe(true);
+		expect(out.ansi.join("\n").includes("\u0007")).toBe(false);
+		expect(out.ansi.join("\n").includes("\u001b]0;")).toBe(false);
+		expect(out.plain.filter((line) => line.includes("한국어")).length).toBeGreaterThan(0);
+		expect(count(out.plain, "Ran 2 tools")).toBe(1);
+	}
+	expect(h.im.chatContainer.children).toEqual(source);
+	expect(bash.result).toBe(source[0].result);
+	expect(glob.result).toBe(source[1].result);
+	expect(executeCalls).toBe(0);
+});
+
+test("G6 header click expands member bodies and recollapses exactly", async () => {
+	executeCalls = 0;
+	const h = await harness("g6");
+	twoSlot("bash", "BASH-CALL", "BASH-EXPANDED-BODY");
+	const evalCardG6 = evalCard(h, "A 조사");
+	const bash = toolCard(h, "bash", { description: "보기", command: "ls" }, textResult("ok", {}));
+	const source = [evalCardG6, bash];
+	add(h, ...source);
+	const screen = mainScreen(h);
+	const collapsed = screen.render();
+	evidence("g6-collapsed", collapsed);
+	const group = groupIn(h);
+	expect(group).toBeDefined();
+	const click = { type: "click", button: "left", x: 2, y: 1, screenX: 2, screenY: 10, width: 150, height: 4 };
+	group?.handleMouse(click);
+	expect(source.map((card) => card.expanded)).toEqual([true, true]);
+	const expanded = screen.render();
+	evidence("g6-expanded", expanded);
+	show("G6 expanded", expanded.plain);
+	expect(expanded.plain.some((line) => line.includes("BASH-EXPANDED-BODY"))).toBe(true);
+	expect(count(expanded.plain, "EVAL-FULL-OUTPUT")).toBe(1);
+	// The group adds only the leading spacer and its header; member bodies are the original card bytes.
+	const expandedChat = render(h);
+	const memberBody = expandedChat.ansi.slice(2);
+	const originalCards = source.flatMap((card) => card.render(150));
+	expect(memberBody).toEqual(originalCards);
+	group?.handleMouse(click);
+	expect(source.map((card) => card.expanded)).toEqual([false, false]);
+	const recollapsed = screen.render();
+	evidence("g6-recollapsed", recollapsed);
+	expect(recollapsed.plain).toEqual(collapsed.plain);
+	expect(h.im.chatContainer.children).toEqual(source);
+	expect(source.every((card) => card.result !== undefined)).toBe(true);
+	expect(executeCalls).toBe(0);
+});
+
+test("G7 errors media questions stubs takeover and Grok stay native", async () => {
+	executeCalls = 0;
+
+	const errorHarness = await harness("g7-error");
+	twoSlot("mcp__ast_grep_scan", "SCAN-CALL", "SCAN-RESULT");
+	twoSlot("bash", "BASH-CALL", "BASH-RESULT");
+	const refused = textResult("QA-MCP-REFUSAL", { error: { code: "refused" }, server: "ast-grep", tool: "scan", preview: "preview must not win" });
+	const errorEval = evalCard(errorHarness, "정상");
+	const mcpError = toolCard(errorHarness, "mcp__ast_grep_scan", { ruleFile: "rule.yml", paths: ["src"] }, refused);
+	const errorSource = [errorEval, mcpError];
+	add(errorHarness, ...errorSource);
+	const errorOut = render(errorHarness);
+	evidence("g7-error", errorOut);
+	expect(hasGroup(errorHarness)).toBe(false);
+	expect(errorOut.plain.some((line) => line.includes("QA-MCP-REFUSAL"))).toBe(true);
+	expect(errorHarness.im.chatContainer.children).toEqual(errorSource);
+	const mediaHarness = await harness("g7-media");
+	const mediaEval = evalCard(mediaHarness, "정상2");
+	const media = toolCard(mediaHarness, "eval", { language: "js", summary: "그림" }, {
+		content: [{ type: "image", data: "AAAA", mimeType: "image/png" }, { type: "text", text: "IMAGE-SIBLING" }],
+		details: { cells: [{ status: "complete", language: "js", summary: "그림" }] },
+	});
+	const mediaSource = [mediaEval, media];
+	add(mediaHarness, ...mediaSource);
+	const mediaImage = media.presentationSnapshot.state.result.content[0];
+	const mediaOut = render(mediaHarness);
+	evidence("g7-media", mediaOut);
+	expect(hasGroup(mediaHarness)).toBe(false);
+	expect(media.presentationSnapshot.state.result.content[0]).toBe(mediaImage);
+
+	const malformedHarness = await harness("g7-malformed");
+	twoSlot("webfetch", "WEBFETCH-CALL", "WEBFETCH-RESULT");
+	const malformedEval = evalCard(malformedHarness, "정상3");
+	const malformedResult = { content: [{ type: "text" }], details: {} };
+	const malformed = toolCard(malformedHarness, "webfetch", { url: "https://example.invalid" }, malformedResult);
+	const malformedSource = [malformedEval, malformed];
+	add(malformedHarness, ...malformedSource);
+	const malformedOut = render(malformedHarness);
+	evidence("g7-malformed", malformedOut);
+	expect(hasGroup(malformedHarness)).toBe(false);
+	expect(malformedOut.plain.some((line) => line.includes("webfetch"))).toBe(true);
+	expect(malformedHarness.im.chatContainer.children).toEqual(malformedSource);
+	expect(malformed.result).toBe(malformedResult);
+
+	const questionHarness = await harness("g7-question");
+	fixture("ask_user_question", { renderCall: () => new tui.Text("QUESTION-CALL", 0, 0) });
+	const q1 = evalCard(questionHarness, "앞");
+	const question = toolCard(questionHarness, "ask_user_question", { question: "진행할까요?" }, textResult("YES", {}));
+	const q2 = evalCard(questionHarness, "뒤");
+	const questionSource = [q1, question, q2];
+	add(questionHarness, ...questionSource);
+	const questionOut = render(questionHarness);
+	evidence("g7-question", questionOut);
+	expect(hasGroup(questionHarness)).toBe(false);
+	expect(questionOut.plain.some((line) => line.includes("QUESTION-CALL") || line.includes("ask_user_question"))).toBe(true);
+	expect(questionHarness.im.chatContainer.children).toEqual(questionSource);
+
+	const stubHarness = await harness("g7-stub");
+	fixture("mcp__ast_grep_scan", { renderCall: () => new tui.Text("MCP-STUB-CALL", 0, 0) });
+	const s1 = evalCard(stubHarness, "전");
+	const stub = toolCard(stubHarness, "mcp__ast_grep_scan", { ruleFile: "rule.yml" }, textResult("inactive guidance", {}));
+	const s2 = evalCard(stubHarness, "후");
+	const stubSource = [s1, stub, s2];
+	add(stubHarness, ...stubSource);
+	const stubOut = render(stubHarness);
+	evidence("g7-stub", stubOut);
+	expect(hasGroup(stubHarness)).toBe(false);
+	expect(stubOut.plain.some((line) => line.includes("inactive guidance"))).toBe(true);
+	expect(stubHarness.im.chatContainer.children).toEqual(stubSource);
+
+	const takeoverHarness = await harness("g7-takeover");
+	fixture("thread_create", { renderResult: () => new tui.Text("TAKEOVER-RESULT", 0, 0) });
+	const t1 = evalCard(takeoverHarness, "하나");
+	const takeover = toolCard(takeoverHarness, "thread_create", { name: "custom" }, okThread({ thread_id: "t9" }));
+	const t2 = evalCard(takeoverHarness, "둘");
+	const takeoverSource = [t1, takeover, t2];
+	add(takeoverHarness, ...takeoverSource);
+	const takeoverOut = render(takeoverHarness);
+	evidence("g7-takeover", takeoverOut);
+	expect(hasGroup(takeoverHarness)).toBe(false);
+	expect(takeoverOut.plain.some((line) => line.includes("TAKEOVER-RESULT"))).toBe(true);
+	expect(takeoverHarness.im.chatContainer.children).toEqual(takeoverSource);
+
+	const grokHarness = await harness("g7-grok");
+	grokHarness.im.chrome = { toolPresentation: "grok" };
+	twoSlot("bash", "BASH-CALL", "BASH-RESULT");
+	noSlot("thread_send");
+	const grokBash = toolCard(grokHarness, "bash", { description: "grok", command: "ls" }, textResult("ok", {}));
+	const grokThread = toolCard(grokHarness, "thread_send", { thread: "t1" }, okThread({ delivery: { kind: "started" }, thread_id: "t1" }));
+	const grokSource = [grokBash, grokThread];
+	add(grokHarness, ...grokSource);
+	const grokOut = render(grokHarness);
+	evidence("g7-grok", grokOut);
+	expect(hasGroup(grokHarness)).toBe(false);
+	expect(grokBash.presentationSnapshot.presentation).toBe("grok");
+	expect(grokThread.presentationSnapshot.presentation).toBe("grok");
+	expect(grokOut.plain.some((line) => line.includes("bash"))).toBe(true);
+	expect(grokOut.plain.some((line) => line.includes("thread_send"))).toBe(true);
+	expect(grokHarness.im.chatContainer.children).toEqual(grokSource);
+	expect(mediaHarness.im.chatContainer.children).toEqual(mediaSource);
+	expect(executeCalls).toBe(0);
+});
+
+test("G8 native fallback lines and reload keep absent slots and raw bytes", async () => {
+	executeCalls = 0;
+	const h = await harness("g8");
+	expect(g8Baseline.frames.length).toBe(3);
+	expect(Object.hasOwn(g8Baseline.definition, "renderCall")).toBe(false);
+	expect(Object.hasOwn(g8Baseline.definition, "renderResult")).toBe(false);
+	const definition = noSlot("thread_create");
+	const after = g8Baseline.frames.map((frame) => {
+		const card = toolCard(h, "thread_create", { name: "G8" }, {
+			content: [{ type: "text", text: Array.from({ length: frame.count }, (_, index) => `LINE-${index + 1}`).join("\n") }],
+			details: {},
+		});
+		const ansi: string[] = card.render(80);
+		return { ansi, plain: ansi.map((line) => Bun.stripANSI(line).trimEnd()) };
+	});
+	expect(Object.hasOwn(definition, "renderCall")).toBe(false);
+	expect(Object.hasOwn(definition, "renderResult")).toBe(false);
+	for (const [index, frame] of g8Baseline.frames.entries()) {
+		const current = after[index];
+		expect(current).toBeDefined();
+		if (!current) continue;
+		expect(current.ansi).toEqual(frame.ansi);
+		expect(current.plain).toEqual(frame.plain);
+		evidence(`g8-native-${frame.count}`, { ansi: current.ansi, plain: current.plain });
+	}
+	const lineNine = g8Baseline.frames.find((frame) => frame.count === 9);
+	const lineTen = g8Baseline.frames.find((frame) => frame.count === 10);
+	const lineEleven = g8Baseline.frames.find((frame) => frame.count === 11);
+	expect(lineNine?.plain.some((line) => line.includes("more lines"))).toBe(false);
+	expect(lineTen?.plain.some((line) => line.includes("more lines"))).toBe(false);
+	expect(lineEleven?.plain.some((line) => line.includes("more lines"))).toBe(true);
+
+	noSlot("thread_list");
+	const listA = toolCard(h, "thread_list", {}, okThread({ threads: [] }));
+	const listB = toolCard(h, "thread_list", {}, okThread({ threads: [] }));
+	add(h, listA, listB);
+	const grouped = render(h);
+	evidence("g8-grouped-before-reload", grouped);
+	expect(count(grouped.plain, "Ran 2 tools · thread_list 2")).toBe(1);
+	expect(h.im.chatContainer.children).toEqual([listA, listB]);
+	expect(listA.result).toBeDefined();
+	expect(listB.result).toBeDefined();
+	h.fire("session_shutdown", { reason: "reload" });
+	h.im.chatContainer.invalidate();
+	const reloaded = render(h);
+	evidence("g8-reloaded", reloaded);
+	expect(hasGroup(h)).toBe(false);
+	expect(reloaded.plain.some((line) => line.includes("thread_list"))).toBe(true);
+
+	const proto = senpi.InteractiveMode.prototype;
+	const savedExpansion = proto.setToolsExpanded;
+	delete proto.setToolsExpanded;
+	try {
+		const notices: string[] = [];
+		// session_start delivers the one load-time warning for the missing expansion seam.
+		const handlers: Handler[] = [];
+		const pi = { on: (_event: string, handler: Handler) => handlers.push(handler) };
+		const missing = await import(`../extension/tool-fold.ts?case=g8-missing-seam`);
+		await missing.default(pi);
+		const ui = { notify: (message: string) => notices.push(message), theme: liveTheme };
+		for (const handler of handlers) handler({ reason: "startup" }, { ui });
+		expect(notices.some((notice) => notice.includes("기록 표시"))).toBe(true);
+	} finally {
+		proto.setToolsExpanded = savedExpansion;
+	}
+	expect(executeCalls).toBe(0);
+});
+
+/** Positional assertion for the mixed block's first-seen order. */
+function inOrder(lines: string[], ...needles: string[]): boolean {
+	let at = -1;
+	for (const needle of needles) {
+		const found = lines.findIndex((line, index) => index > at && line.includes(needle));
+		if (found < 0) return false;
+		at = found;
+	}
+	return true;
 }
 
 test("R1 thinking labels hidden and two evals grouped", async () => {
