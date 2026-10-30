@@ -43,7 +43,7 @@ omo install git:github.com/yjacket/omo-tool-fold
 
 omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-tool-fold`에 클론하고 `~/.omo/agent/settings.json`의 `packages`에 등록합니다. 실행 중인 세션에서 `/reload`를 입력하세요.
 
-**업데이트:** `omo update --extensions`(설치된 패키지 전부) 또는 `omo update git:github.com/yjacket/omo-tool-fold`를 실행한 뒤 `/reload`를 입력하세요.
+**업데이트:** `omo update --extensions`는 git으로 설치한 확장을 모두 업데이트합니다. 이 확장만 올리려면 `omo update --extension git:github.com/yjacket/omo-tool-fold`를 실행합니다. 실행 중인 세션은 `/reload` 뒤나 새 세션에서 바뀐 내용을 씁니다.
 
 테마 `grok-day-focus`는 패키지에 함께 들어 있습니다. 쓰려면 `~/.omo/agent/settings.json`에 다음을 넣습니다.
 
@@ -146,11 +146,20 @@ senpi에는 다른 확장이 만든 도구의 그리기 방식을 바꾸는 공�
 
 ## 개발
 
+git worktree에서 브랜치를 만들어 작업하고 `master`로 PR을 엽니다. 기본 브랜치는 보호되어 있어서 `test` 체크(CI가 windows-latest에서 `bun run test` 실행)를 통과한 PR로만 바뀝니다. 직접 push, force push, 브랜치 삭제는 막혀 있습니다.
+
+로컬에서 테스트 돌리기:
+
 ```sh
+bun install   # 필요하면
 bun test
 ```
 
-가짜 senpi, pi-tui 모듈(`bun:test`의 `mock.module`)을 상대로 렌더러 테스트를 돌립니다. 테스트마다 `?case=<random>` 쿼리로 확장을 새로 import합니다. 실제 omo 세션은 쓰지 않습니다. 실제 TUI에서 확인하는 방법은 [CLAUDE.md](CLAUDE.md)에 있습니다.
+가짜 senpi, pi-tui 모듈(`bun:test`의 `mock.module`)을 상대로 렌더러 테스트를 돌립니다. 테스트마다 `?case=<random>` 쿼리로 확장을 새로 import합니다. 실제 omo 세션은 쓰지 않습니다.
+
+실제 TUI 확인은 격리해서 합니다. 실제 `~/.omo`를 쓰지 말고, 임시 폴더 아래에 HOME, USERPROFILE, APPDATA, LOCALAPPDATA와 `OMO_`/`PI_`/`SENPI_CODING_AGENT_DIR`을 따로 잡습니다. QA 스크립트와 격리 방법은 [CLAUDE.md](CLAUDE.md)에 있습니다. 작업 트리를 내 omo에서 잠깐 확인할 때는 `omo install <클론 경로>`를 써도 되지만, 확인이 끝나면 git 설치로 되돌립니다.
+
+`.omo/` 작업 산출물(증거, 스크린샷)이나 토큰, 내부 호스트 이름은 커밋하지 않습니다.
 
 ## 라이선스
 
