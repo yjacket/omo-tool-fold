@@ -11,8 +11,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```sh
 bun test
 bun test -t "<name substring>"
-omo install <path-to-this-clone>   # loads the working tree; /reload picks up edits
 ```
+
+For a quick check in a real omo, `omo install <path-to-this-clone>` loads the working tree (`/reload` picks up edits). That's for development only; switch back to `omo install git:github.com/yjacket/omo-tool-fold` afterwards. Updates for users: `omo update --extensions`.
+
+Changes land only through a PR to `master` whose `test` check passes. Don't commit `.omo/` scratch, tokens or internal host names.
 
 It ships as an omo package: `package.json` `pi` names `extension/tool-fold.ts` and the `themes/` folder, and users install it with `omo install git:github.com/yjacket/omo-tool-fold`.
 

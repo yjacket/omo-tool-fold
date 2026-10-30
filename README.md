@@ -43,7 +43,7 @@ omo install git:github.com/yjacket/omo-tool-fold
 
 omo clones the repository into `~/.omo/agent/git/github.com/yjacket/omo-tool-fold` and adds it to `packages` in `~/.omo/agent/settings.json`. Type `/reload` in running sessions.
 
-**Update:** `omo update --extensions` (every installed package) or `omo update git:github.com/yjacket/omo-tool-fold`, then `/reload`.
+**Update:** `omo update --extensions` updates every git-installed extension. To update only this one, run `omo update --extension git:github.com/yjacket/omo-tool-fold`. Running sessions pick up the change after `/reload` or in a new session.
 
 The theme `grok-day-focus` comes with the package. To use it, set this in `~/.omo/agent/settings.json`:
 
@@ -146,11 +146,20 @@ Thinking hiding and eval blocks were tested with `@code-yeongyu/senpi` 2026.10.1
 
 ## Development
 
+Work in a git worktree on a branch and open a PR against `master`. The default branch is protected: changes land only through a PR whose `test` check passes (CI runs `bun run test` on windows-latest), and direct pushes, force pushes and branch deletion are blocked.
+
+Run the tests locally:
+
 ```sh
+bun install   # if needed
 bun test
 ```
 
-This runs renderer tests against fake senpi and pi-tui modules (`bun:test` `mock.module`). Each test imports a fresh copy of the extension through a `?case=<random>` query. The suite doesn't use a live omo session. Live TUI checks are described in [CLAUDE.md](CLAUDE.md).
+This runs renderer tests against fake senpi and pi-tui modules (`bun:test` `mock.module`). Each test imports a fresh copy of the extension through a `?case=<random>` query. The suite doesn't use a live omo session.
+
+Live checks must stay isolated. Never point them at the real `~/.omo`: use a temp HOME, USERPROFILE, APPDATA and LOCALAPPDATA plus temp `OMO_`/`PI_`/`SENPI_CODING_AGENT_DIR` under a scratch folder. The QA scripts and their isolation are described in [CLAUDE.md](CLAUDE.md). To try a working tree in your own omo, `omo install <path-to-clone>` works for a quick check, but switch back to the git install afterwards.
+
+Don't commit `.omo/` scratch output (evidence, screenshots) or any tokens and internal host names.
 
 ## License
 
