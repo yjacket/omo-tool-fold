@@ -177,7 +177,7 @@ describe("tool-fold", () => {
 		expect(out).toEqual({ original: "eval.result" });
 	});
 
-	test("error, cancelled, and unknown future states fall back to the original", async () => {
+	test("cancelled and unknown future states fall back to the original; a failed run folds as failed", async () => {
 		const host = makeHost();
 		const { session } = await load(host);
 		const render = session.getToolDefinition("eval").renderResult;
@@ -185,7 +185,7 @@ describe("tool-fold", () => {
 			const result = { details: { cells: [{ status, language: "js", summary: "s" }] } };
 			expect(render(result, {}, theme, {})).toEqual({ original: "eval.result" });
 		}
-		expect(render({ isError: true, details: okEval.details }, {}, theme, {})).toEqual({ original: "eval.result" });
+		expect((render({ isError: true, details: okEval.details }, {}, theme, {}) as FakeTruncatedText).text).toBe("✗ eval");
 	});
 
 	test("a throwing plan (odd data shape) falls back to the original", async () => {
@@ -207,13 +207,13 @@ describe("tool-fold", () => {
 		expect(forwarded.lastComponent).toBeUndefined();
 	});
 
-	test("edit errors keep the original call and result", async () => {
+	test("edit errors fold to the failed line and hide the call", async () => {
 		const host = makeHost();
 		const { session } = await load(host);
 		const edit = session.getToolDefinition("edit");
 		const ctx = { isError: true, hasResult: true, args: { path: "a.ts" } };
-		expect(edit.renderCall({ path: "a.ts" }, theme, ctx)).toEqual({ original: "edit.call" });
-		expect(edit.renderResult({ isError: true }, {}, theme, ctx)).toEqual({ original: "edit.result" });
+		expect((edit.renderCall({ path: "a.ts" }, theme, ctx) as FakeTruncatedText).render(80)).toEqual([]);
+		expect((edit.renderResult({ isError: true }, {}, theme, ctx) as FakeTruncatedText).text).toBe("✗ edit");
 	});
 
 	test("apply_patch collapses actual preview totals for single and multiple files", async () => {
@@ -239,7 +239,7 @@ describe("tool-fold", () => {
 		expect(patch.renderCall({ input: "*** Begin Patch\n*** Update File:" }, theme, {})).toEqual({ original: "patch.call" });
 	});
 
-	test("apply_patch expanded, failed, partial-failed and unexpected results stay original", async () => {
+	test("apply_patch expanded, partial-failed and unexpected results stay original; failed ones fold as failed", async () => {
 		const host = makeHost();
 		const { session } = await load(host);
 		const patch = session.getToolDefinition("apply_patch");
@@ -247,8 +247,8 @@ describe("tool-fold", () => {
 		const folded = patch.renderResult(result, {}, theme, {});
 		expect(patch.renderResult(result, { expanded: true }, theme, { lastComponent: folded })).toEqual({ original: "patch.result" });
 		expect((host.calls.at(-1)?.args[3] as { lastComponent?: unknown }).lastComponent).toBeUndefined();
+		expect((patch.renderResult({ ...result, isError: true }, {}, theme, {}) as FakeTruncatedText).text).toBe("✗ apply_patch");
 		for (const bad of [
-			{ ...result, isError: true },
 			{ details: { ...result.details, result: { failures: [{ filePath: "b.ts" }] } } },
 			{},
 			{ details: { preview: { files: [], added: 0, removed: 0 } } },
@@ -256,10 +256,10 @@ describe("tool-fold", () => {
 		]) {
 			expect(patch.renderResult(bad, {}, theme, {})).toEqual({ original: "patch.result" });
 		}
-		expect(patch.renderResult(result, {}, theme, { isError: true })).toEqual({ original: "patch.result" });
+		expect((patch.renderResult(result, {}, theme, { isError: true }) as FakeTruncatedText).text).toBe("✗ apply_patch");
 	});
 
-	test("todo collapsed keeps only its title line; expanded and errors use the original", async () => {
+	test("todo collapsed keeps only its title line; expanded uses the original and errors fold as failed", async () => {
 		const host = makeHost();
 		const { session } = await load(host);
 		const todo = session.getToolDefinition("todo");
@@ -267,7 +267,7 @@ describe("tool-fold", () => {
 		expect((todo.renderResult(result, {}, theme, {}) as { render(w: number): string[] }).render(80)).toEqual([]);
 		expect(todo.renderCall({ op: "done" }, theme, { hasResult: true })).toEqual({ original: "todo.call" });
 		expect(todo.renderResult(result, { expanded: true }, theme, {})).toEqual({ original: "todo.result" });
-		expect(todo.renderResult(result, {}, theme, { isError: true })).toEqual({ original: "todo.result" });
+		expect((todo.renderResult(result, {}, theme, { isError: true }) as FakeTruncatedText).text).toBe("✗ todo");
 	});
 
 	test("web_search collapses to tool + query, with a mark while partial", async () => {
@@ -278,7 +278,7 @@ describe("tool-fold", () => {
 		expect((ws.renderResult({ details: {} }, {}, theme, ctx) as FakeTruncatedText).text).toBe("web_search bun webview");
 		expect((ws.renderResult({ details: {} }, { isPartial: true }, theme, ctx) as FakeTruncatedText).text).toBe("web_search bun webview …");
 		expect((ws.renderCall(ctx.args, theme, { hasResult: true }) as { render(w: number): string[] }).render(80)).toEqual([]);
-		expect(ws.renderResult({ isError: true }, {}, theme, ctx)).toEqual({ original: "ws.result" });
+		expect((ws.renderResult({ isError: true }, {}, theme, ctx) as FakeTruncatedText).text).toBe("✗ web_search");
 		expect(ws.renderResult({ details: {} }, { expanded: true }, theme, ctx)).toEqual({ original: "ws.result" });
 	});
 
@@ -701,7 +701,7 @@ describe("grouping eligibility", () => {
 			expect((out[2] as Grouped).render(80)[1]).toBe("• Ran 2 evals");
 		}
 		const direct = def.renderResult({ details: { ...okEval.details, isError: true } }, {}, theme, {});
-		expect(direct).toEqual({ original: "eval.result" });
+		expect((direct as FakeTruncatedText).text).toBe("✗ eval");
 	});
 
 	test("malformed and image content cards stay outside groups without mutation", async () => {
@@ -734,7 +734,7 @@ describe("grouping eligibility", () => {
 			expect(result).toEqual(before);
 			if (label === "image") expect((result.content as unknown[])[0]).toBe(image);
 		}
-		expect(write.renderResult({ details: {} }, {}, theme, { isError: true })).toEqual({ original: "write.result" });
+		expect((write.renderResult({ details: {} }, {}, theme, { isError: true }) as FakeTruncatedText).text).toBe("✗ write");
 	});
 
 	test("task status failures and unknown states stay native while active and completed statuses group", async () => {
@@ -2100,7 +2100,9 @@ describe("audited renderer grouping", () => {
 			const out = transcript(host, [evalCard(evalDef, `${label} a`), unsafe, evalCard(evalDef, `${label} b`), evalCard(evalDef, `${label} c`)]).project();
 			expect(out.length).toBe(3);
 			expect(out[1]).toBe(unsafe);
-			if (mode === "member") {
+			if (mode === "member" && label === "renderer-error") {
+				expect((full.renderResult(result, {}, theme, { args }) as FakeTruncatedText).text).toBe("✗ mcp__ast_grep_search");
+			} else if (mode === "member") {
 				expect(full.renderResult(result, {}, theme, { args })).toEqual({ original: "mcp__ast_grep_search.result" });
 			}
 		}
@@ -2170,5 +2172,93 @@ describe("audited renderer grouping", () => {
 		const unknownOut = transcript(host, [evalCard(evalDef, "u a"), unknown]).project();
 		expect(unknownOut.length).toBe(2);
 		expect(unknownOut[1]).toBe(unknown);
+	});
+});
+
+describe("failed calls", () => {
+	const marked = { fg: (color: string, text: string) => (color === "error" ? `<${color}>${text}</${color}>` : text), bold: (text: string) => text };
+	const failed = (text: string, details: Record<string, unknown> = {}) => ({ content: [{ type: "text", text }], details });
+	const text = (out: unknown) => (out as FakeTruncatedText).text;
+
+	test("a failed eval folds to a red mark, the tool and the error message after its stdout; Ctrl+O keeps the original", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const ctx = { isError: true, hasResult: true, args: { language: "js", summary: "s", code: "dcli" } };
+		// codemode pushes error.message after the cell's stdout; later text blocks are notices.
+		const result = {
+			content: [{ type: "text", text: "Error: printed by the cell\nQA_BEFORE_ERROR\ndcli is not defined\n" }, { type: "text", text: "kernel restarted" }],
+			details: { ...okEval.details, isError: true },
+		};
+		expect(text(evalDef.renderResult(result, {}, marked, ctx))).toBe("<error>✗</error> eval · dcli is not defined");
+		expect(evalDef.renderCall(ctx.args, marked, ctx) as FakeTruncatedText).toBeDefined();
+		expect((evalDef.renderCall(ctx.args, marked, ctx) as FakeTruncatedText).render(80)).toEqual([]);
+		expect(evalDef.renderResult(result, { expanded: true }, marked, { ...ctx, expanded: true })).toEqual({ original: "eval.result" });
+		expect(evalDef.renderCall(ctx.args, marked, { ...ctx, expanded: true })).toEqual({ original: "eval.call" });
+	});
+
+	test("without an error-shaped line the first non-empty line is shown; no text leaves just the mark and tool", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const edit = session.getToolDefinition("edit");
+		const ctx = { isError: true, hasResult: true, args: { path: "a.ts" } };
+		expect(text(edit.renderResult(failed("\n  Could not find the exact text\nmore"), {}, theme, ctx))).toBe("✗ edit · Could not find the exact text");
+		expect(text(edit.renderResult({}, {}, theme, ctx))).toBe("✗ edit");
+		expect((edit.renderCall(ctx.args, theme, ctx) as FakeTruncatedText).render(80)).toEqual([]);
+	});
+
+	test("shell, compact, todo, apply_patch, glob and MCP failures share the same line", async () => {
+		const host = makeHost();
+		host.defs.powershell = { renderCall: () => ({ original: "ps.call" }), renderResult: () => ({ original: "ps.result" }) };
+		host.defs.glob = { renderCall: () => ({ original: "glob.call" }), renderResult: () => ({ original: "glob.result" }) };
+		host.defs.mcp__ast_grep_search = { renderCall: () => ({ original: "mcp.call" }), renderResult: () => ({ original: "mcp.result" }) };
+		const { session } = await load(host);
+		const ctx = { isError: true, hasResult: true, args: {} };
+		const cases: [string, string][] = [
+			["powershell", "Get-Item : Cannot find path 'x'"],
+			["web_search", "Search provider unavailable"],
+			["todo", "Unknown task: Ship it"],
+			["apply_patch", "Error: file not found: b.ts"],
+			["glob", "Path does not exist"],
+			["mcp__ast_grep_search", "Error: sg not installed"],
+		];
+		for (const [name, message] of cases) {
+			const def = session.getToolDefinition(name);
+			expect(text(def.renderResult(failed(`${message}\n\nCommand exited with code 1`), {}, theme, ctx)), name).toBe(`✗ ${name} · ${message}`);
+			expect((def.renderCall({}, theme, ctx) as FakeTruncatedText).render(80), name).toEqual([]);
+		}
+	});
+
+	test("a task whose snapshot failed or was cancelled folds as failed even without isError", async () => {
+		const host = makeHost();
+		host.defs.task = { renderCall: () => ({ original: "task.call" }), renderResult: () => ({ original: "task.result" }) };
+		const { session } = await load(host);
+		const task = session.getToolDefinition("task");
+		for (const status of ["error", "cancelled"]) {
+			const out = task.renderResult(failed(`Task ${status}: worker crashed`, { snapshot: { status } }), {}, theme, { hasResult: true, args: {} });
+			expect(text(out), status).toBe(`✗ task · Task ${status}: worker crashed`);
+		}
+	});
+
+	test("failed lines drop terminal controls and eval controls stay native", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const evalDef = session.getToolDefinition("eval");
+		const ctx = { isError: true, hasResult: true, args: { code: "x" } };
+		const line = text(evalDef.renderResult(failed("\u001b[31mTypeError:\tboom\u001b[0m\r"), {}, theme, ctx));
+		expect(line).toBe("✗ eval · TypeError: boom");
+		const peek = { isError: true, hasResult: true, args: { action: "peek", cell_id: "c1" } };
+		expect(evalDef.renderResult(failed("no such cell"), {}, theme, peek)).toEqual({ original: "eval.result" });
+		expect(evalDef.renderCall(peek.args, theme, peek)).toEqual({ original: "eval.call" });
+	});
+
+	test("a failed card folds alone and still breaks a group", async () => {
+		const host = makeHost();
+		const { session } = await load(host);
+		const def = session.getToolDefinition("eval");
+		const bad = evalCard(def, "bad", { isError: true, ...failed("Error: nope", okEval.details) });
+		const out = transcript(host, [evalCard(def, "a"), bad, evalCard(def, "b")]).project();
+		expect(out.length).toBe(3);
+		expect(out[1]).toBe(bad);
 	});
 });

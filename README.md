@@ -2,7 +2,7 @@
 
 English | [한국어](README.ko.md)
 
-An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. Finished hidden thinking leaves no `Thought:` line, and two or more eligible tool calls in a row (eval, edit, todo, terminal controls, thread receipts, ...) read as one short block. Questions, images, errors and native-only tools stay visible as their own cards. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
+An OMO (senpi) extension that folds each tool call into a single line while tool output is collapsed. That's the TUI default, and Ctrl+O toggles it. Each line names the tool and what it did, so a long session reads like a log instead of a wall of boxes. Press Ctrl+O to expand, and every tool shows its original full output again. Finished hidden thinking leaves no `Thought:` line, and two or more eligible tool calls in a row (eval, edit, todo, terminal controls, thread receipts, ...) read as one short block. Questions, images and native-only tools stay visible as their own cards, and a failed call gets its own `✗` line. The repo also ships `grok-day-focus`, a light theme that tints your own messages blue and makes tool boxes almost white.
 
 ## What you see
 
@@ -57,7 +57,7 @@ If you installed with the old copy scripts, delete `~/.omo/agent/extensions/tool
 
 ## Which tools fold and which don't
 
-- **eval:** `eval js ✓ <first line of the cell summary>`. Error, cancelled, or unknown-status cells keep the original full box.
+- **eval:** `eval js ✓ <first line of the cell summary>`. A failed run folds like any failed call (below); cancelled or unknown-status cells keep the original full box.
 - **edit:** `edit <path relative to cwd> (+added/-removed)`.
 - **apply_patch:** `apply_patch <path relative to cwd or N files> (+added/-removed)`. Counts come from the applied preview; partial failures and missing preview data keep the original output.
 - **todo:** when a todo call stands alone, only the title line is drawn, for example `todo done: A 확인`. The same title is used inside a block. The full list is still there through `/todo` and the todo widget under the input box.
@@ -72,7 +72,9 @@ If you installed with the old copy scripts, delete `~/.omo/agent/extensions/tool
 
 That is the finite scope: of the 79 names in the observed catalog, 61 are conditionally eligible (39 renderer-backed plus 22 projection-only) and 18 stay native. A tool added by a future OMO update is never folded blindly, and no name is admitted by wildcard or prefix.
 
-Any error result (`result.isError`, `details.isError`, or the render context's `isError`) shows the original full output. Non-text content such as images, failed or cancelled states, partial apply_patch results and unknown required shapes also stay native. A failed, cancelled or unknown task status (`task_output` `details.snapshot.status`) also keeps the original output.
+**Failed calls.** An error result (`result.isError`, `details.isError`, or the render context's `isError`) of any tool above that has its own renderer folds to `✗ <tool> · <first error line>`, for example `✗ eval · ReferenceError: dcli is not defined`. The `✗` is red, and it still marks the failure without colour. For eval the error line is the last line of the cell output, where eval puts the error message. For other tools it is the first line shaped like `SomethingError: ...` or `error: ...`, otherwise the first non-empty line of the output. With no text the line is just `✗ <tool>`. A failed, cancelled or unknown task status (`details.snapshot.status`) counts as failed too. Ctrl+O shows the original full output. Eval peek, stop and list calls and the current terminal `bash` (no renderer slots) keep their native error box, and a lone projection-only card stays as its owner draws it.
+
+Non-text content such as images, cancelled or unknown eval states, partial apply_patch results and unknown required shapes stay native.
 
 ## Finished thinking
 
@@ -83,7 +85,7 @@ Any error result (`result.isError`, `details.isError`, or the render context's `
 
 ## Consecutive folded calls
 
-- Every eligible tool above can join a block while its collapsed presentation is this extension's one line. That includes todo and the 22 projection-only names; projection-only cards are only summarized inside a run of two or more. Failed calls, apply_patch with failed hunks, cancelled and unknown-status evals end the block and keep their full box. Eval peek, stop and list calls, questions, answers, media and native-only tools also end the block.
+- Every eligible tool above can join a block while its collapsed presentation is this extension's one line. That includes todo and the 22 projection-only names; projection-only cards are only summarized inside a run of two or more. Failed calls end the block and keep their own `✗` line; apply_patch with failed hunks, cancelled and unknown-status evals end the block and keep their full box. Eval peek, stop and list calls, questions, answers, media and native-only tools also end the block.
 - Assistant steps that hold only hidden thinking don't break the block.
 - A tool that stays native (read, grep, find, ls, ask_user_question, media, MCP stubs, ...) breaks it.
 - A returned background-shell receipt (details.background plus bash_id) is labeled `background <id>`; it means the job was launched, not that it finished.

@@ -39,7 +39,8 @@ The package requires Bun >= 1.4. Tests use `bun:test` mock.module fakes and impo
 
 ## Invariants
 
-- Never break the TUI: errors, unexpected data, and render failures must fall back to the original renderer.
+- Never break the TUI: unexpected data and render failures must fall back to the original renderer.
+- A failed result (`callFailed`: context `isError`, `result.isError`, `details.isError` or an unsafe task status) folds to `failedFold`'s `✗ <tool> · <first error line>` in every renderer-backed plan, and the call slot goes empty. The `✗` keeps the failure readable without colour; expanded output stays original. Failed cards still never join a group.
 - Never mutate stored tool results. Before calling an original renderer, remove this extension's component from `context.lastComponent`.
 - Feature-detect every Senpi/TUI internal. If an internal is missing, leave rendering original and show one session-start warning.
 - Keep the folding list an explicit allowlist. Leave `read`, `grep`, `find`, `ls`, and `ask_user_question` untouched; do not blindly fold future tools.

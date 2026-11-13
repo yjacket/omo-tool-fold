@@ -289,7 +289,7 @@ const evalPlan: ToolPlan = {
 	renderCall([args, theme, context]) {
 		const request = args as Record<string, unknown> | undefined;
 		const ctx = context as RenderContext | undefined;
-		if (ctx?.expanded || ctx?.isError) return undefined;
+		if (ctx?.expanded) return undefined;
 		if (!evalActionEligible(request)) return undefined;
 		if (ctx?.hasResult) return { empty: true };
 		const line = evalCallLine(request);
@@ -298,7 +298,8 @@ const evalPlan: ToolPlan = {
 	},
 	renderResult([result, options, theme, context]) {
 		const ctx = context as RenderContext | undefined;
-		if (isExpanded(options as RenderOptions, ctx) || ctx?.isError) return undefined;
+		if (isExpanded(options as RenderOptions, ctx)) return undefined;
+		if (callFailed(result, ctx)) return evalActionEligible(ctx?.args) ? failedFold("eval", result, theme as Theme, true) : undefined;
 		const line = evalResultLine(result, ctx?.args);
 		if (!line) return undefined;
 		const state =
@@ -310,7 +311,8 @@ const evalPlan: ToolPlan = {
 const editPlan: ToolPlan = {
 	renderCall([args, theme, context]) {
 		const ctx = context as RenderContext | undefined;
-		if (ctx?.expanded || ctx?.isError) return undefined;
+		if (ctx?.expanded) return undefined;
+		if (ctx?.isError) return { empty: true };
 		const path = editPath(args);
 		if (!path) return undefined;
 		if (ctx?.hasResult) return { empty: true };
@@ -319,7 +321,8 @@ const editPlan: ToolPlan = {
 	renderResult([result, options, theme, context]) {
 		const res = result as ToolResult;
 		const ctx = context as RenderContext | undefined;
-		if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+		if (isExpanded(options as RenderOptions, ctx)) return undefined;
+		if (callFailed(res, ctx)) return failedFold("edit", res, theme as Theme);
 		const path = editPath(ctx?.args);
 		if (!path) return undefined;
 		const counts = diffCounts(res?.details?.diff);
@@ -331,7 +334,8 @@ const editPlan: ToolPlan = {
 const patchPlan: ToolPlan = {
 	renderCall([args, theme, context]) {
 		const ctx = context as RenderContext | undefined;
-		if (ctx?.expanded || ctx?.isError) return undefined;
+		if (ctx?.expanded) return undefined;
+		if (ctx?.isError) return { empty: true };
 		const input = (args as Record<string, unknown> | undefined)?.input;
 		if (typeof input !== "string" || !input.trimEnd().endsWith("*** End Patch")) return undefined;
 		const paths = [...input.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)\r?$/gm)].map((match) => match[1].trim());
@@ -344,7 +348,8 @@ const patchPlan: ToolPlan = {
 		const res = result as ToolResult;
 		const ctx = context as RenderContext | undefined;
 		const opts = options as RenderOptions;
-		if (isExpanded(opts, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+		if (isExpanded(opts, ctx)) return undefined;
+		if (callFailed(res, ctx)) return failedFold("apply_patch", res, theme as Theme);
 		const details = res?.details;
 		const patchResult = details?.result as { failures?: unknown[] } | undefined;
 		if (patchResult?.failures?.length) return undefined;
@@ -893,10 +898,14 @@ function projectionLine(tool: string, args: unknown, result: unknown): Projectio
 }
 
 const todoPlan: ToolPlan = {
-	renderResult([result, options, , context]) {
-		const res = result as ToolResult;
+	renderCall([, , context]) {
 		const ctx = context as RenderContext | undefined;
-		if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+		return !ctx?.expanded && ctx?.isError ? { empty: true } : undefined;
+	},
+	renderResult([result, options, theme, context]) {
+		const ctx = context as RenderContext | undefined;
+		if (isExpanded(options as RenderOptions, ctx)) return undefined;
+		if (callFailed(result, ctx)) return failedFold("todo", result, theme as Theme);
 		return { empty: true };
 	},
 };
@@ -936,7 +945,7 @@ function shellPlan(name: string): ToolPlan {
 	return {
 		renderCall([args, theme, context]) {
 			const ctx = context as RenderContext | undefined;
-			if (ctx?.expanded || ctx?.isError) return undefined;
+			if (ctx?.expanded) return undefined;
 			if (ctx?.hasResult) return { empty: true };
 			const line = shellText(name, args, theme as Theme);
 			return line ? { line } : undefined;
@@ -944,7 +953,8 @@ function shellPlan(name: string): ToolPlan {
 		renderResult([result, options, theme, context]) {
 			const res = result as ToolResult;
 			const ctx = context as RenderContext | undefined;
-			if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+			if (isExpanded(options as RenderOptions, ctx)) return undefined;
+			if (callFailed(res, ctx)) return failedFold(name, res, theme as Theme);
 			const line = shellText(name, ctx?.args, theme as Theme, res?.details);
 			return line ? { line } : undefined;
 		},
@@ -963,7 +973,7 @@ function globText(args: unknown, theme: Theme, cwd: unknown): string | undefined
 const globPlan: ToolPlan = {
 	renderCall([args, theme, context]) {
 		const ctx = context as RenderContext | undefined;
-		if (ctx?.expanded || ctx?.isError) return undefined;
+		if (ctx?.expanded) return undefined;
 		if (ctx?.hasResult) return { empty: true };
 		const line = globText(args, theme as Theme, ctx?.cwd);
 		return line ? { line } : undefined;
@@ -971,7 +981,8 @@ const globPlan: ToolPlan = {
 	renderResult([result, options, theme, context]) {
 		const res = result as ToolResult;
 		const ctx = context as RenderContext | undefined;
-		if (isExpanded(options as RenderOptions, ctx) || res?.isError || res?.details?.isError === true || ctx?.isError) return undefined;
+		if (isExpanded(options as RenderOptions, ctx)) return undefined;
+		if (callFailed(res, ctx)) return failedFold("glob", res, theme as Theme);
 		const line = globText(ctx?.args, theme as Theme, ctx?.cwd);
 		return line ? { line } : undefined;
 	},
@@ -1030,7 +1041,7 @@ function mcpPlan(name: string): ToolPlan {
 	return {
 		renderCall([args, theme, context]) {
 			const ctx = context as RenderContext | undefined;
-			if (ctx?.expanded || ctx?.isError) return undefined;
+			if (ctx?.expanded) return undefined;
 			if (ctx?.hasResult) return { empty: true };
 			const line = mcpText(name, args, theme as Theme);
 			return line ? { line } : undefined;
@@ -1038,7 +1049,9 @@ function mcpPlan(name: string): ToolPlan {
 		renderResult([result, options, theme, context]) {
 			const res = result as ToolResult;
 			const ctx = context as RenderContext | undefined;
-			if (isExpanded(options as RenderOptions, ctx) || res?.isError || ctx?.isError || !textOnlyContent(result)) return undefined;
+			if (isExpanded(options as RenderOptions, ctx)) return undefined;
+			if (callFailed(res, ctx)) return failedFold(name, res, theme as Theme);
+			if (!textOnlyContent(result)) return undefined;
 			const details = res?.details;
 			// A refusal carries both details.error and a preview; reject it before reading the preview.
 			if (!isRecord(details) || details.error !== undefined || details.isError === true) return undefined;
@@ -1053,7 +1066,7 @@ function compactPlan(name: string): ToolPlan {
 	return {
 		renderCall([args, theme, context]) {
 			const ctx = context as RenderContext | undefined;
-			if (ctx?.expanded || ctx?.isError) return undefined;
+			if (ctx?.expanded) return undefined;
 			if (ctx?.hasResult) return { empty: true };
 			return { line: compactLine(name, args, theme as Theme, ctx?.cwd, false) };
 		},
@@ -1061,7 +1074,8 @@ function compactPlan(name: string): ToolPlan {
 			const res = result as ToolResult;
 			const ctx = context as RenderContext | undefined;
 			const opts = options as RenderOptions;
-			if (isExpanded(opts, ctx) || resultFailed(res) || ctx?.isError) return undefined;
+			if (isExpanded(opts, ctx)) return undefined;
+			if (callFailed(res, ctx)) return failedFold(name, res, theme as Theme);
 			return { line: compactLine(name, ctx?.args, theme as Theme, ctx?.cwd, opts?.isPartial === true) };
 		},
 	};
@@ -1164,6 +1178,34 @@ function taskStatusUnsafe(result: unknown): boolean {
 function resultFailed(result: unknown): boolean {
 	const res = result as ToolResult;
 	return !!res && typeof res === "object" && (!!res.isError || res.details?.isError === true || taskStatusUnsafe(res));
+}
+
+function callFailed(result: unknown, context: RenderContext | undefined): boolean {
+	return context?.isError === true || resultFailed(result);
+}
+
+/** An error-shaped line ("ReferenceError: ...", "error: ...") names the failure better than leading stdout. */
+const ERROR_LINE = /^[\w$.]*(?:error|exception)\s*:/i;
+
+/** `lastOfOutput`: codemode eval appends the error message after the cell's stdout in its first text block. */
+function errorLine(result: unknown, lastOfOutput: boolean): string | undefined {
+	const lines: string[] = [];
+	const content = isRecord(result) && Array.isArray(result.content) ? result.content : [];
+	for (const block of lastOfOutput ? content.slice(0, 1) : content) {
+		if (!isRecord(block) || typeof block.text !== "string") continue;
+		for (const raw of block.text.split("\n")) {
+			const line = plainText(raw);
+			if (line) lines.push(line);
+		}
+	}
+	return lastOfOutput ? lines.at(-1) : (lines.find((line) => ERROR_LINE.test(line)) ?? lines[0]);
+}
+
+/** A failed call's collapsed line: a red ✗ that reads without colour, the tool, and its first error line. */
+function failedFold(name: string, result: unknown, theme: Theme, lastOfOutput = false): Fold {
+	const head = `${paint(theme, "error", "✗")} ${title(theme, name)}`;
+	const line = errorLine(result, lastOfOutput);
+	return { line: line ? `${head} ${paint(theme, "muted", "·")} ${line}` : head };
 }
 
 /** Missing content stays compatible; present content must be an array made only of text blocks. */
